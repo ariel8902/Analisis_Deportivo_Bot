@@ -12,15 +12,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
-LIGAS = {
-    "Liga BetPlay Colombia": "239",
-    "Premier League": "39",
-    "La Liga España": "140",
-    "Serie A Italia": "135",
-    "UEFA Champions League": "2",
-    "Copa Libertadores": "13"
-}
-
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO DE POISSON
 # ---------------------------------------------------------
@@ -92,31 +83,31 @@ def obtener_partidos_hoy():
     }
 
     partidos_analizados = []
+    url = "https://football-api-7.p.rapidapi.com/api/v1/matches/live"
 
-    for nombre_liga, league_id in LIGAS.items():
-        url = f"https://football-api-7.p.rapidapi.com/api/v3/matches/live?league_id={league_id}"
-        try:
-            req = urllib.request.Request(url, headers=headers, method='GET')
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status == 200:
-                    datos = json.loads(response.read().decode('utf-8'))
-                    matches = datos.get("events", []) or datos.get("matches", []) or datos.get("data", [])
-                    for match in matches:
-                        eq_local = match.get("homeTeam", {}).get("name", "Local")
-                        eq_vis = match.get("awayTeam", {}).get("name", "Visitante")
-                        
-                        poisson_stats = calcular_probabilidades_poisson(1.45, 1.15)
-                        analisis_ia = evaluar_con_gemini(eq_local, eq_vis, poisson_stats)
+    try:
+        req = urllib.request.Request(url, headers=headers, method='GET')
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status == 200:
+                datos = json.loads(response.read().decode('utf-8'))
+                matches = datos.get("events", []) or datos.get("matches", []) or datos.get("data", [])
+                for match in matches[:3]:
+                    eq_local = match.get("homeTeam", {}).get("name", "Local")
+                    eq_vis = match.get("awayTeam", {}).get("name", "Visitante")
+                    nombre_liga = match.get("tournament", {}).get("name", "Liga Internacional")
 
-                        partidos_analizados.append({
-                            "liga": nombre_liga,
-                            "local": eq_local,
-                            "visitante": eq_vis,
-                            "poisson": poisson_stats,
-                            "gemini": analisis_ia
-                        })
-        except Exception as e:
-            print(f"Información liga {nombre_liga}: {e}")
+                    poisson_stats = calcular_probabilidades_poisson(1.45, 1.15)
+                    analisis_ia = evaluar_con_gemini(eq_local, eq_vis, poisson_stats)
+
+                    partidos_analizados.append({
+                        "liga": nombre_liga,
+                        "local": eq_local,
+                        "visitante": eq_vis,
+                        "poisson": poisson_stats,
+                        "gemini": analisis_ia
+                    })
+    except Exception as e:
+        print(f"Información de consulta de API: {e}")
 
     return partidos_analizados
 
@@ -158,8 +149,8 @@ def enviar_reporte_telegram(partidos):
     if not partidos:
         mensaje = (
             "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n"
-            "✅ *El bot se ejecutó con éxito y la conexión con Telegram funciona correctamente.*\n"
-            "⚠️ *No hay partidos en vivo agendados en este momento para las ligas monitorizadas.*"
+            "✅ *El pipeline se ejecutó con éxito y la conexión con Telegram funciona correctamente.*\n"
+            "⚠️ *Sin partidos en vivo detectados en este momento. El sistema volverá a evaluar en la próxima ejecución programada.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, chat_id, mensaje)
         return
