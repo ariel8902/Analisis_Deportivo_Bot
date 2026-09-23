@@ -25,4 +25,4 @@ jobs:
           pip install pyTelegramBotAPI
 
       - name: Ejecutar motor de analisis de Python
-        run: python análisis_futbol_prepartido.py
+        run: python analisis_futbol_prepartido.py
