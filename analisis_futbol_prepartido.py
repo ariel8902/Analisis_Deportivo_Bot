@@ -1,6 +1,6 @@
 import os
+import math
 import requests
-from scipy.stats import poisson
 import google.generativeai as genai
 
 # ---------------------------------------------------------
@@ -25,16 +25,19 @@ LIGAS = {
 }
 
 # ---------------------------------------------------------
-# 2. MOTOR CUANTITATIVO DE POISSON
+# 2. MOTOR CUANTITATIVO DE POISSON (NATIVO PYTHON)
 # ---------------------------------------------------------
+def poisson_pmf(k, lambda_param):
+    """Calcula la probabilidad de la distribución de Poisson sin librerías externas."""
+    return (lambda_param ** k) * math.exp(-lambda_param) / math.factorial(k)
+
 def calcular_probabilidades_poisson(lambda_local, lambda_visitante, max_goles=6):
-    p_local_mas15, p_visitante_mas15 = 0, 0
     p_over15, p_over25, p_btts = 0, 0, 0
 
     for i in range(max_goles + 1):
-        p_i = poisson.pmf(i, lambda_local)
+        p_i = poisson_pmf(i, lambda_local)
         for j in range(max_goles + 1):
-            p_j = poisson.pmf(j, lambda_visitante)
+            p_j = poisson_pmf(j, lambda_visitante)
             prob_matriz = p_i * p_j
 
             if i + j > 1.5:
@@ -95,13 +98,12 @@ def obtener_partidos_hoy():
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 datos = res.json()
-                # Extraer partidos del payload devuelto
                 matches = datos.get("events", []) or datos.get("matches", [])
                 for match in matches:
                     eq_local = match.get("homeTeam", {}).get("name", "Local")
                     eq_vis = match.get("awayTeam", {}).get("name", "Visitante")
                     
-                    # Promedios de gol estimados / dinámicos
+                    # Promedios de gol estimados
                     exp_goles_local = 1.45
                     exp_goles_vis = 1.15
                     
@@ -130,7 +132,6 @@ def enviar_reporte_telegram(partidos):
 
     url_telegram = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    # Obtener ID del chat asignado
     url_updates = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
     try:
         res = requests.get(url_updates).json()
@@ -140,7 +141,7 @@ def enviar_reporte_telegram(partidos):
         return
 
     if not partidos:
-        mensaje = "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n⚠️ *No hay partidos en vivo o agendados para hoy en las ligas monitorizadas.*"
+        mensaje = "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n⚠️ *No hay partidos agendados para hoy en las ligas monitorizadas.*"
         requests.post(url_telegram, data={"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"})
         return
 
