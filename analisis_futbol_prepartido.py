@@ -22,10 +22,9 @@ LIGAS = {
 }
 
 # ---------------------------------------------------------
-# 2. MOTOR CUANTITATIVO DE POISSON (NATIVO PYTHON)
+# 2. MOTOR CUANTITATIVO DE POISSON
 # ---------------------------------------------------------
 def poisson_pmf(k, lambda_param):
-    """Calcula la probabilidad PMF de Poisson."""
     return (lambda_param ** k) * math.exp(-lambda_param) / math.factorial(k)
 
 def calcular_probabilidades_poisson(lambda_local, lambda_visitante, max_goles=6):
@@ -51,7 +50,7 @@ def calcular_probabilidades_poisson(lambda_local, lambda_visitante, max_goles=6)
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CONTEXTUAL DE IA (GEMINI API VÍA HTTP REST)
+# 3. FILTRO CONTEXTUAL DE IA (GEMINI API)
 # ---------------------------------------------------------
 def evaluar_con_gemini(equipo_local, equipo_visitante, datos_poisson):
     if not GEMINI_API_KEY:
@@ -80,7 +79,7 @@ def evaluar_con_gemini(equipo_local, equipo_visitante, datos_poisson):
         return f"Error al consultar Gemini API: {str(e)}"
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN DE DATOS (RAPIDAPI - FOOTBALL API 7 VÍA HTTP)
+# 4. INGESTIÓN DE DATOS (RAPIDAPI)
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     if not RAPIDAPI_KEY:
@@ -128,29 +127,41 @@ def obtener_partidos_hoy():
 # ---------------------------------------------------------
 # 5. ENVÍO DE REPORTES A TELEGRAM
 # ---------------------------------------------------------
+def enviar_mensaje_telegram(token, chat_id, texto):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = urllib.parse.urlencode({"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"}).encode('utf-8')
+    req = urllib.request.Request(url, data=payload, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            print("Mensaje enviado con éxito a Telegram:", res.status)
+    except Exception as e:
+        print("Error enviando mensaje a Telegram:", e)
+
 def enviar_reporte_telegram(partidos):
     if not TELEGRAM_BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN no configurado.")
         return
 
-    # Obtener el chat_id dinámicamente
+    # Obtener el chat_id de las actualizaciones
+    chat_id = None
     url_updates = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    req_updates = urllib.request.Request(url_updates)
     try:
+        req_updates = urllib.request.Request(url_updates)
         with urllib.request.urlopen(req_updates, timeout=10) as response:
             res = json.loads(response.read().decode('utf-8'))
-            chat_id = res['result'][-1]['message']['chat']['id']
-    except Exception:
-        print("Error al obtener chat_id de Telegram. Asegúrate de haber enviado un mensaje previo a tu Bot.")
-        return
+            if res.get('result'):
+                chat_id = res['result'][-1]['message']['chat']['id']
+    except Exception as e:
+        print("No se pudo obtener chat_id de getUpdates:", e)
 
-    url_telegram = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    if not chat_id:
+        print("ADVERTENCIA: No se detectó interacción reciente con el bot para obtener chat_id.")
+        print("Para solucionarlo, abre tu bot en Telegram, envíale cualquier mensaje (ejemplo: 'hola') y vuelve a ejecutar.")
+        return
 
     if not partidos:
         mensaje = "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n⚠️ *No hay partidos agendados para hoy en las ligas monitorizadas.*"
-        payload = urllib.parse.urlencode({"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}).encode('utf-8')
-        req = urllib.request.Request(url_telegram, data=payload, method='POST')
-        urllib.request.urlopen(req)
+        enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, chat_id, mensaje)
         return
 
     for p in partidos:
@@ -165,9 +176,7 @@ def enviar_reporte_telegram(partidos):
             f"🤖 **Filtro Contextual Gemini IA:**\n"
             f"{p['gemini']}"
         )
-        payload = urllib.parse.urlencode({"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}).encode('utf-8')
-        req = urllib.request.Request(url_telegram, data=payload, method='POST')
-        urllib.request.urlopen(req)
+        enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, chat_id, mensaje)
 
 # ---------------------------------------------------------
 # EJECUCIÓN PRINCIPAL
