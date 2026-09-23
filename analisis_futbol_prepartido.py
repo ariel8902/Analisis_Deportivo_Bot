@@ -3,6 +3,7 @@ import math
 import json
 import urllib.request
 import urllib.parse
+from datetime import datetime
 
 # ---------------------------------------------------------
 # 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
@@ -92,9 +93,10 @@ def obtener_partidos_hoy():
     }
 
     partidos_analizados = []
+    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
     for nombre_liga, league_id in LIGAS.items():
-        url = f"https://football-api-7.p.rapidapi.com/api/v1/custom/matches?league_id={league_id}"
+        url = f"https://football-api-7.p.rapidapi.com/api/v1/custom/matches?league_id={league_id}&date={fecha_hoy}"
         try:
             req = urllib.request.Request(url, headers=headers, method='GET')
             with urllib.request.urlopen(req, timeout=10) as response:
@@ -148,7 +150,7 @@ def enviar_reporte_telegram(partidos):
         mensaje = (
             "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n"
             "✅ *El bot se ejecutó con éxito y la conexión con Telegram funciona perfectamente.*\n"
-            "⚠️ *No hay partidos en vivo o en agenda inmediata para las ligas monitorizadas en este momento.*"
+            "⚠️ *Sin partidos prepartido agendados en este momento para las ligas monitorizadas.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, chat_id, mensaje)
         return
