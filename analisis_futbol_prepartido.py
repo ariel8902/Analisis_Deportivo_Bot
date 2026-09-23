@@ -116,8 +116,9 @@ def obtener_promedios_tabla(competicion_code, id_local, id_visita):
     url = f"https://api.football-data.org/v4/competitions/{competicion_code}/standings"
     headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
     
-    xg_l_dinamico = 1.60
-    xg_v_dinamico = 1.20
+    # Promedios históricos generales realistas si no se encuentra la tabla exacta
+    xg_l_dinamico = 1.45
+    xg_v_dinamico = 1.15
     
     try:
         response = requests.get(url, headers=headers, timeout=8)
@@ -145,7 +146,7 @@ def obtener_promedios_tabla(competicion_code, id_local, id_visita):
     except Exception as e:
         print(f"⚠️ Usando xG base por restricción de tabla: {e}")
         
-    return max(xg_l_dinamico, 0.5), max(xg_v_dinamico, 0.5)
+    return max(xg_l_dinamico, 0.8), max(xg_v_dinamico, 0.8)
 
 def obtener_partidos_reales_hoy():
     fecha_hoy = time.strftime("%Y-%m-%d")
@@ -175,7 +176,7 @@ def obtener_partidos_reales_hoy():
     return partidos
 
 # ==============================================================================
-# 4. EJECUCIÓN GENERAL
+# 4. EJECUCIÓN GENERAL Y DESPACHO
 # ==============================================================================
 
 def ejecutar_sistema_analisis():
