@@ -5,12 +5,12 @@ import urllib.request
 import urllib.parse
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
+# 1. CREDENCIALES DIRECTAS
 # ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "TU_TELEGRAM_BOT_TOKEN_AQUI"
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or "TU_TELEGRAM_CHAT_ID_AQUI"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or "TU_GEMINI_API_KEY_AQUI"
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY") or "TU_RAPIDAPI_KEY_AQUI"
 
 LIGAS = {
     "Liga BetPlay Colombia": "239",
@@ -53,7 +53,7 @@ def calcular_probabilidades_poisson(lambda_local, lambda_visitante, max_goles=6)
 # 3. FILTRO CONTEXTUAL DE IA (GEMINI API REST)
 # ---------------------------------------------------------
 def evaluar_con_gemini(equipo_local, equipo_visitante, datos_poisson):
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEY or "TU_GEMINI" in GEMINI_API_KEY:
         return "Análisis de IA no disponible (Falta GEMINI_API_KEY)."
 
     prompt = (
@@ -82,8 +82,8 @@ def evaluar_con_gemini(equipo_local, equipo_visitante, datos_poisson):
 # 4. INGESTIÓN DE DATOS DE FÚTBOL
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
-    if not RAPIDAPI_KEY:
-        print("Error: No se encontró la variable RAPIDAPI_KEY en los Secrets.")
+    if not RAPIDAPI_KEY or "TU_RAPIDAPI" in RAPIDAPI_KEY:
+        print("Error: RAPIDAPI_KEY no configurada.")
         return []
 
     headers = {
@@ -134,13 +134,13 @@ def enviar_mensaje_telegram(token, chat_id, texto):
         print("Error enviando mensaje a Telegram:", e)
 
 def enviar_reporte_telegram(partidos):
-    if not TELEGRAM_BOT_TOKEN:
+    if not TELEGRAM_BOT_TOKEN or "TU_TELEGRAM" in TELEGRAM_BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN no configurado.")
         return
 
     chat_id = TELEGRAM_CHAT_ID
 
-    if not chat_id:
+    if not chat_id or "TU_CHAT" in chat_id:
         url_updates = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
         try:
             req_updates = urllib.request.Request(url_updates)
@@ -151,14 +151,14 @@ def enviar_reporte_telegram(partidos):
         except Exception as e:
             print("No se pudo obtener chat_id automáticamente:", e)
 
-    if not chat_id:
+    if not chat_id or "TU_CHAT" in chat_id:
         print("ERROR CRÍTICO: No existe chat_id definido.")
         return
 
     if not partidos:
         mensaje = (
             "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n"
-            "✅ *El bot se ejecutó con éxito y la conexión con Telegram funciona correctamente.*\n"
+            "✅ *El bot se ejecutó con éxito y se conectó correctamente a Telegram.*\n"
             "⚠️ *No hay partidos en vivo o en agenda inmediata para las ligas monitorizadas en este momento.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, chat_id, mensaje)
