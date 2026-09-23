@@ -1,7 +1,8 @@
 import os
 import math
-import requests
-import google.generativeai as genai
+import json
+import urllib.request
+import urllib.parse
 
 # ---------------------------------------------------------
 # 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
@@ -9,10 +10,6 @@ import google.generativeai as genai
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-
-# Inicializar Gemini API
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
 
 # Ligas monitorizadas en Football API 7 (RapidAPI)
 LIGAS = {
@@ -28,7 +25,7 @@ LIGAS = {
 # 2. MOTOR CUANTITATIVO DE POISSON (NATIVO PYTHON)
 # ---------------------------------------------------------
 def poisson_pmf(k, lambda_param):
-    """Calcula la probabilidad de la distribución de Poisson sin librerías externas."""
+    """Calcula la probabilidad PMF de Poisson."""
     return (lambda_param ** k) * math.exp(-lambda_param) / math.factorial(k)
 
 def calcular_probabilidades_poisson(lambda_local, lambda_visitante, max_goles=6):
@@ -54,31 +51,36 @@ def calcular_probabilidades_poisson(lambda_local, lambda_visitante, max_goles=6)
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CONTEXTUAL DE IA (GEMINI API)
+# 3. FILTRO CONTEXTUAL DE IA (GEMINI API VÍA HTTP REST)
 # ---------------------------------------------------------
 def evaluar_con_gemini(equipo_local, equipo_visitante, datos_poisson):
     if not GEMINI_API_KEY:
         return "Análisis de IA no disponible (Falta GEMINI_API_KEY)."
 
-    prompt = f"""
-    Actúa como un analista deportivo cuantitativo profesional.
-    Evalúa el siguiente partido usando las probabilidades del modelo de Poisson calculadas:
-    - Partido: {equipo_local} vs {equipo_visitante}
-    - Probabilidad Over 1.5 Goles: {datos_poisson['over_1_5']}%
-    - Probabilidad Over 2.5 Goles: {datos_poisson['over_2_5']}%
-    - Probabilidad Ambos Anotan (BTTS): {datos_poisson['btts']}%
+    prompt = (
+        f"Actúa como un analista deportivo cuantitativo profesional. "
+        f"Evalúa el siguiente partido usando las probabilidades del modelo de Poisson calculadas:\n"
+        f"- Partido: {equipo_local} vs {equipo_visitante}\n"
+        f"- Probabilidad Over 1.5 Goles: {datos_poisson['over_1_5']}%\n"
+        f"- Probabilidad Over 2.5 Goles: {datos_poisson['over_2_5']}%\n"
+        f"- Probabilidad Ambos Anotan (BTTS): {datos_poisson['btts']}%\n\n"
+        f"Proporciona un veredicto sintético de 3 a 4 líneas considerando noticias recientes, bajas o contexto competitivo."
+    )
 
-    Proporciona un veredicto sintético de 3 a 4 líneas considerando noticias recientes, bajas o contexto competitivo.
-    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode('utf-8')
+    headers = {"Content-Type": "application/json"}
+
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
+        with urllib.request.urlopen(req, timeout=15) as response:
+            res_data = json.loads(response.read().decode('utf-8'))
+            return res_data['candidates'][0]['content']['parts'][0]['text'].strip()
     except Exception as e:
         return f"Error al consultar Gemini API: {str(e)}"
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN DE DATOS (RAPIDAPI - FOOTBALL API 7)
+# 4. INGESTIÓN DE DATOS (RAPIDAPI - FOOTBALL API 7 VÍA HTTP)
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     if not RAPIDAPI_KEY:
@@ -87,36 +89,37 @@ def obtener_partidos_hoy():
 
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "football-api-7.p.rapidapi.com"
+        "x-rapidapi-host": "football-api-7.p.rapidapi.com",
+        "User-Agent": "Python-urllib"
     }
 
     partidos_analizados = []
 
     for nombre_liga, league_id in LIGAS.items():
         url = f"https://football-api-7.p.rapidapi.com/api/v3/matches/live?league_id={league_id}"
+        req = urllib.request.Request(url, headers=headers, method='GET')
         try:
-            res = requests.get(url, headers=headers, timeout=10)
-            if res.status_code == 200:
-                datos = res.json()
-                matches = datos.get("events", []) or datos.get("matches", [])
-                for match in matches:
-                    eq_local = match.get("homeTeam", {}).get("name", "Local")
-                    eq_vis = match.get("awayTeam", {}).get("name", "Visitante")
-                    
-                    # Promedios de gol estimados
-                    exp_goles_local = 1.45
-                    exp_goles_vis = 1.15
-                    
-                    poisson_stats = calcular_probabilidades_poisson(exp_goles_local, exp_goles_vis)
-                    analisis_ia = evaluar_con_gemini(eq_local, eq_vis, poisson_stats)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    datos = json.loads(response.read().decode('utf-8'))
+                    matches = datos.get("events", []) or datos.get("matches", [])
+                    for match in matches:
+                        eq_local = match.get("homeTeam", {}).get("name", "Local")
+                        eq_vis = match.get("awayTeam", {}).get("name", "Visitante")
+                        
+                        exp_goles_local = 1.45
+                        exp_goles_vis = 1.15
+                        
+                        poisson_stats = calcular_probabilidades_poisson(exp_goles_local, exp_goles_vis)
+                        analisis_ia = evaluar_con_gemini(eq_local, eq_vis, poisson_stats)
 
-                    partidos_analizados.append({
-                        "liga": nombre_liga,
-                        "local": eq_local,
-                        "visitante": eq_vis,
-                        "poisson": poisson_stats,
-                        "gemini": analisis_ia
-                    })
+                        partidos_analizados.append({
+                            "liga": nombre_liga,
+                            "local": eq_local,
+                            "visitante": eq_vis,
+                            "poisson": poisson_stats,
+                            "gemini": analisis_ia
+                        })
         except Exception as e:
             print(f"Error consultando liga {nombre_liga}: {e}")
 
@@ -130,19 +133,24 @@ def enviar_reporte_telegram(partidos):
         print("Error: TELEGRAM_BOT_TOKEN no configurado.")
         return
 
-    url_telegram = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    
+    # Obtener el chat_id dinámicamente
     url_updates = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    req_updates = urllib.request.Request(url_updates)
     try:
-        res = requests.get(url_updates).json()
-        chat_id = res['result'][-1]['message']['chat']['id']
+        with urllib.request.urlopen(req_updates, timeout=10) as response:
+            res = json.loads(response.read().decode('utf-8'))
+            chat_id = res['result'][-1]['message']['chat']['id']
     except Exception:
         print("Error al obtener chat_id de Telegram. Asegúrate de haber enviado un mensaje previo a tu Bot.")
         return
 
+    url_telegram = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
     if not partidos:
         mensaje = "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n⚠️ *No hay partidos agendados para hoy en las ligas monitorizadas.*"
-        requests.post(url_telegram, data={"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"})
+        payload = urllib.parse.urlencode({"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}).encode('utf-8')
+        req = urllib.request.Request(url_telegram, data=payload, method='POST')
+        urllib.request.urlopen(req)
         return
 
     for p in partidos:
@@ -157,7 +165,9 @@ def enviar_reporte_telegram(partidos):
             f"🤖 **Filtro Contextual Gemini IA:**\n"
             f"{p['gemini']}"
         )
-        requests.post(url_telegram, data={"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"})
+        payload = urllib.parse.urlencode({"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}).encode('utf-8')
+        req = urllib.request.Request(url_telegram, data=payload, method='POST')
+        urllib.request.urlopen(req)
 
 # ---------------------------------------------------------
 # EJECUCIÓN PRINCIPAL
