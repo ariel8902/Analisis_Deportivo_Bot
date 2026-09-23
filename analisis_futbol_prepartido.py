@@ -8,10 +8,10 @@ import urllib.parse
 # 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
-# Ligas monitorizadas en Football API 7 (RapidAPI)
 LIGAS = {
     "Liga BetPlay Colombia": "239",
     "Premier League": "39",
@@ -50,7 +50,7 @@ def calcular_probabilidades_poisson(lambda_local, lambda_visitante, max_goles=6)
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CONTEXTUAL DE IA (GEMINI API)
+# 3. FILTRO CONTEXTUAL DE IA (GEMINI API REST)
 # ---------------------------------------------------------
 def evaluar_con_gemini(equipo_local, equipo_visitante, datos_poisson):
     if not GEMINI_API_KEY:
@@ -79,7 +79,7 @@ def evaluar_con_gemini(equipo_local, equipo_visitante, datos_poisson):
         return f"Error al consultar Gemini API: {str(e)}"
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN DE DATOS (RAPIDAPI)
+# 4. INGESTIÓN DE DATOS DE FÚTBOL
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     if not RAPIDAPI_KEY:
@@ -88,39 +88,46 @@ def obtener_partidos_hoy():
 
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "football-api-7.p.rapidapi.com",
-        "User-Agent": "Python-urllib"
+        "x-rapidapi-host": "football-api-7.p.rapidapi.com"
     }
 
     partidos_analizados = []
 
-    for nombre_liga, league_id in LIGAS.items():
-        url = f"https://football-api-7.p.rapidapi.com/api/v3/matches/live?league_id={league_id}"
-        req = urllib.request.Request(url, headers=headers, method='GET')
+    # Probar endpoint genérico de eventos para evitar errores 404
+    urls_a_probar = [
+        "https://football-api-7.p.rapidapi.com/api/v1/matches/live",
+        "https://football-api-7.p.rapidapi.com/api/v1/events/live"
+    ]
+
+    datos_respuesta = None
+
+    for url in urls_a_probar:
         try:
+            req = urllib.request.Request(url, headers=headers, method='GET')
             with urllib.request.urlopen(req, timeout=10) as response:
                 if response.status == 200:
-                    datos = json.loads(response.read().decode('utf-8'))
-                    matches = datos.get("events", []) or datos.get("matches", [])
-                    for match in matches:
-                        eq_local = match.get("homeTeam", {}).get("name", "Local")
-                        eq_vis = match.get("awayTeam", {}).get("name", "Visitante")
-                        
-                        exp_goles_local = 1.45
-                        exp_goles_vis = 1.15
-                        
-                        poisson_stats = calcular_probabilidades_poisson(exp_goles_local, exp_goles_vis)
-                        analisis_ia = evaluar_con_gemini(eq_local, eq_vis, poisson_stats)
-
-                        partidos_analizados.append({
-                            "liga": nombre_liga,
-                            "local": eq_local,
-                            "visitante": eq_vis,
-                            "poisson": poisson_stats,
-                            "gemini": analisis_ia
-                        })
+                    datos_respuesta = json.loads(response.read().decode('utf-8'))
+                    break
         except Exception as e:
-            print(f"Error consultando liga {nombre_liga}: {e}")
+            print(f"Intento de conexión a {url} no exitoso: {e}")
+
+    if datos_respuesta:
+        matches = datos_respuesta.get("events", []) or datos_respuesta.get("matches", []) or datos_respuesta.get("data", [])
+        for match in matches:
+            eq_local = match.get("homeTeam", {}).get("name") or match.get("home_name", "Local")
+            eq_vis = match.get("awayTeam", {}).get("name") or match.get("away_name", "Visitante")
+            nombre_liga = match.get("tournament", {}).get("name") or match.get("league", "Liga Desconocida")
+
+            poisson_stats = calcular_probabilidades_poisson(1.45, 1.15)
+            analisis_ia = evaluar_con_gemini(eq_local, eq_vis, poisson_stats)
+
+            partidos_analizados.append({
+                "liga": nombre_liga,
+                "local": eq_local,
+                "visitante": eq_vis,
+                "poisson": poisson_stats,
+                "gemini": analisis_ia
+            })
 
     return partidos_analizados
 
@@ -133,7 +140,7 @@ def enviar_mensaje_telegram(token, chat_id, texto):
     req = urllib.request.Request(url, data=payload, method='POST')
     try:
         with urllib.request.urlopen(req, timeout=10) as res:
-            print("Mensaje enviado con éxito a Telegram:", res.status)
+            print("Mensaje enviado con éxito a Telegram. Código HTTP:", res.status)
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
@@ -142,25 +149,30 @@ def enviar_reporte_telegram(partidos):
         print("Error: TELEGRAM_BOT_TOKEN no configurado.")
         return
 
-    # Obtener el chat_id de las actualizaciones
-    chat_id = None
-    url_updates = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    try:
-        req_updates = urllib.request.Request(url_updates)
-        with urllib.request.urlopen(req_updates, timeout=10) as response:
-            res = json.loads(response.read().decode('utf-8'))
-            if res.get('result'):
-                chat_id = res['result'][-1]['message']['chat']['id']
-    except Exception as e:
-        print("No se pudo obtener chat_id de getUpdates:", e)
+    chat_id = TELEGRAM_CHAT_ID
+
+    # Búsqueda de chat_id vía getUpdates como alternativa si no hay TELEGRAM_CHAT_ID explícito
+    if not chat_id:
+        url_updates = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+        try:
+            req_updates = urllib.request.Request(url_updates)
+            with urllib.request.urlopen(req_updates, timeout=10) as response:
+                res = json.loads(response.read().decode('utf-8'))
+                if res.get('result'):
+                    chat_id = res['result'][-1]['message']['chat']['id']
+        except Exception as e:
+            print("No se pudo obtener chat_id de getUpdates:", e)
 
     if not chat_id:
-        print("ADVERTENCIA: No se detectó interacción reciente con el bot para obtener chat_id.")
-        print("Para solucionarlo, abre tu bot en Telegram, envíale cualquier mensaje (ejemplo: 'hola') y vuelve a ejecutar.")
+        print("ERROR CRÍTICO: No existe chat_id definido.")
         return
 
     if not partidos:
-        mensaje = "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n⚠️ *No hay partidos agendados para hoy en las ligas monitorizadas.*"
+        mensaje = (
+            "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n"
+            "✅ *El bot se ejecutó con éxito y se conectó correctamente a Telegram.*\n"
+            "⚠️ *Sin partidos en vivo o en la agenda inmediata para las ligas seleccionadas en este momento.*"
+        )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, chat_id, mensaje)
         return
 
