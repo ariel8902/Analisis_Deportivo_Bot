@@ -2,9 +2,8 @@ name: Ejecutar Bot de Analisis Deportivo 8:00 AM
 
 on:
   schedule:
-    # 8:00 AM hora de Colombia (13:00 UTC)
     - cron: '0 13 * * *'
-  workflow_dispatch: # Permite probarlo manualmente cuando quieras
+  workflow_dispatch:
 
 jobs:
   ejecutar-script:
@@ -22,7 +21,9 @@ jobs:
       - name: Instalar librerias necesarias
         run: |
           python -m pip install --upgrade pip
-          pip install pyTelegramBotAPI
+          pip install pyTelegramBotAPI google-genai requests
 
       - name: Ejecutar motor de analisis de Python
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python analisis_futbol_prepartido.py
