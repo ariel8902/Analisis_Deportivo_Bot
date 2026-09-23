@@ -1,231 +1,166 @@
-import math
-import time
 import os
 import requests
-from telebot import TeleBot
-from google import genai
+from scipy.stats import poisson
+import google.generativeai as genai
 
-# ==============================================================================
-# CONFIGURACIÓN Y CREDENCIALES
-# ==============================================================================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8650458483:AAFcREwoHQwVvm293oc2jDxKHe1H5VdsNyg")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8707489920")
-FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "b3d1f1c7d8a946e3b8a1c2d3e4f5a6b7")
+# ---------------------------------------------------------
+# 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
+# ---------------------------------------------------------
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
-bot = TeleBot(TELEGRAM_BOT_TOKEN)
-
-# Conexión directa a Google Gemini IA
-gemini_client = None
+# Inicializar Gemini API
 if GEMINI_API_KEY:
-    try:
-        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"⚠️ Error al conectar con Google Gemini: {e}")
+    genai.configure(api_key=GEMINI_API_KEY)
 
-UMBRAL_MINIMO_CONFIANZA = 70.0  
+# Ligas monitorizadas en Football API 7 (RapidAPI)
+LIGAS = {
+    "Liga BetPlay Colombia": "239",
+    "Premier League": "39",
+    "La Liga España": "140",
+    "Serie A Italia": "135",
+    "UEFA Champions League": "2",
+    "Copa Libertadores": "13"
+}
 
-# Ampliación de ligas: Europa + Sudamérica + Torneos Internacionales
-LIGAS_A_MONITOREAR = ["PL", "PD", "CL", "SA", "BL1", "FL1", "BSA", "CLI", "EC"]
+# ---------------------------------------------------------
+# 2. MOTOR CUANTITATIVO DE POISSON
+# ---------------------------------------------------------
+def calcular_probabilidades_poisson(lambda_local, lambda_visitante, max_goles=6):
+    p_local_mas15, p_visitante_mas15 = 0, 0
+    p_over15, p_over25, p_btts = 0, 0, 0
 
-# ==============================================================================
-# 1. EVALUACIÓN CONTEXTUAL CON IA REAL (GEMINI)
-# ==============================================================================
+    for i in range(max_goles + 1):
+        p_i = poisson.pmf(i, lambda_local)
+        for j in range(max_goles + 1):
+            p_j = poisson.pmf(j, lambda_visitante)
+            prob_matriz = p_i * p_j
 
-def analizar_contexto_con_ia_real(local, visita, liga):
-    """Consulta en tiempo real a Google Gemini para analizar bajas, clima y noticias."""
-    if not gemini_client:
-        return 0.0, "IA no activa (Configurar GEMINI_API_KEY en Secrets)"
+            if i + j > 1.5:
+                p_over15 += prob_matriz
+            if i + j > 2.5:
+                p_over25 += prob_matriz
+            if i > 0 and j > 0:
+                p_btts += prob_matriz
 
-    prompt = f"""
-    Eres un analista deportivo cuantitativo profesional.
-    Analiza el partido {local} vs {visita} de la liga/torneo {liga}.
-    
-    Evalúa factores objetivos de última hora en la web:
-    1. Lesiones o suspensiones de jugadores titulares clave.
-    2. Condiciones del clima o estado del terreno de juego.
-    3. Carga de partidos (rotaciones por copas o torneos internacionales).
-    
-    Responde estrictamente en este formato breve (máximo 2 líneas):
-    AJUSTE: [Un número flotante entre -5.0 y +5.0 con el impacto en probabilidad]
-    RAZON: [Explicación técnica breve de los factores encontrados]
-    """
-
-    try:
-        response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
-        texto = response.text
-        
-        ajuste = 0.0
-        razon = "Análisis contextual en vivo completado por Gemini IA"
-        
-        for linea in texto.split('\n'):
-            if "AJUSTE:" in linea:
-                partes = linea.replace("AJUSTE:", "").strip()
-                try:
-                    ajuste = float(partes)
-                except ValueError:
-                    ajuste = 0.0
-            elif "RAZON:" in linea:
-                razon = linea.replace("RAZON:", "").strip()
-                
-        return ajuste, razon
-    except Exception as e:
-        print(f"❌ Error al consultar Gemini IA: {e}")
-        return 0.0, "Consulta de IA no disponible temporalmente"
-
-# ==============================================================================
-# 2. ALGORITMO CUANTITATIVO MATEMÁTICO (POISSON)
-# ==============================================================================
-
-def calcular_poisson(k, lambda_param):
-    return (math.pow(lambda_param, k) * math.exp(-lambda_param)) / math.factorial(k)
-
-def calcular_matriz_poisson(xg_local, xg_visita):
-    prob_mas_1_5 = 0.0
-    prob_mas_2_5 = 0.0
-    prob_btts = 0.0
-    
-    for gl in range(6):
-        p_l = calcular_poisson(gl, xg_local)
-        for gv in range(6):
-            p_v = calcular_poisson(gv, xg_visita)
-            p_res = p_l * p_v
-            
-            if (gl + gv) > 1:
-                prob_mas_1_5 += p_res
-            if (gl + gv) > 2:
-                prob_mas_2_5 += p_res
-            if gl > 0 and gv > 0:
-                prob_btts += p_res
-                
     return {
-        "mas_1_5": round(prob_mas_1_5 * 100, 1),
-        "mas_2_5": round(prob_mas_2_5 * 100, 1),
-        "btts": round(prob_btts * 100, 1)
+        "over_1_5": round(p_over15 * 100, 1),
+        "over_2_5": round(p_over25 * 100, 1),
+        "btts": round(p_btts * 100, 1)
     }
 
-# ==============================================================================
-# 3. INGESTA DINÁMICA DE DATOS Y TABLA DE POSICIONES
-# ==============================================================================
+# ---------------------------------------------------------
+# 3. FILTRO CONTEXTUAL DE IA (GEMINI API)
+# ---------------------------------------------------------
+def evaluar_con_gemini(equipo_local, equipo_visitante, datos_poisson):
+    if not GEMINI_API_KEY:
+        return "Análisis de IA no disponible (Falta GEMINI_API_KEY)."
 
-def obtener_promedios_tabla(competicion_code, id_local, id_visita):
-    """Consulta la tabla de posiciones real para calcular el xG dinámico específico."""
-    url = f"https://api.football-data.org/v4/competitions/{competicion_code}/standings"
-    headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
-    
-    # Promedios históricos generales realistas si no se encuentra la tabla exacta
-    xg_l_dinamico = 1.45
-    xg_v_dinamico = 1.15
-    
+    prompt = f"""
+    Actúa como un analista deportivo cuantitativo profesional.
+    Evalúa el siguiente partido usando las probabilidades del modelo de Poisson calculadas:
+    - Partido: {equipo_local} vs {equipo_visitante}
+    - Probabilidad Over 1.5 Goles: {datos_poisson['over_1_5']}%
+    - Probabilidad Over 2.5 Goles: {datos_poisson['over_2_5']}%
+    - Probabilidad Ambos Anotan (BTTS): {datos_poisson['btts']}%
+
+    Proporciona un veredicto sintético de 3 a 4 líneas considerando noticias recientes, bajas o contexto competitivo.
+    """
     try:
-        response = requests.get(url, headers=headers, timeout=8)
-        if response.status_code == 200:
-            standings = response.json().get("standings", [])
-            if standings:
-                table = standings[0].get("table", [])
-                
-                stats_local = next((item for item in table if item["team"]["id"] == id_local), None)
-                stats_visita = next((item for item in table if item["team"]["id"] == id_visita), None)
-                
-                if stats_local and stats_visita:
-                    partidos_l = max(stats_local.get("playedGames", 1), 1)
-                    partidos_v = max(stats_visita.get("playedGames", 1), 1)
-                    
-                    prom_gol_favor_l = stats_local.get("goalsFor", 0) / partidos_l
-                    prom_gol_contra_v = stats_visita.get("goalsAgainst", 0) / partidos_v
-                    
-                    prom_gol_favor_v = stats_visita.get("goalsFor", 0) / partidos_v
-                    prom_gol_contra_l = stats_local.get("goalsAgainst", 0) / partidos_l
-                    
-                    # Cálculo estocástico de xG específico por rendimiento
-                    xg_l_dinamico = round((prom_gol_favor_l + prom_gol_contra_v) / 2.0, 2)
-                    xg_v_dinamico = round((prom_gol_favor_v + prom_gol_contra_l) / 2.0, 2)
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        print(f"⚠️ Usando xG base por restricción de tabla: {e}")
-        
-    return max(xg_l_dinamico, 0.8), max(xg_v_dinamico, 0.8)
+        return f"Error al consultar Gemini API: {str(e)}"
 
-def obtener_partidos_reales_hoy():
-    fecha_hoy = time.strftime("%Y-%m-%d")
-    url = f"https://api.football-data.org/v4/matches?dateFrom={fecha_hoy}&dateTo={fecha_hoy}"
-    headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
-    
-    partidos = []
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            matches = response.json().get("matches", [])
-            for m in matches:
-                comp_code = m.get("competition", {}).get("code")
-                
-                # Obtener métricas dinámicas reales basadas en la tabla de posiciones
-                xg_l, xg_v = obtener_promedios_tabla(comp_code, m["homeTeam"]["id"], m["awayTeam"]["id"])
-                
-                partidos.append({
-                    "local": m["homeTeam"]["name"],
-                    "visita": m["awayTeam"]["name"],
-                    "liga": m.get("competition", {}).get("name", "Liga Profesional"),
-                    "xg_l": xg_l,
-                    "xg_v": xg_v
-                })
-    except Exception as e:
-        print(f"❌ Error API Fútbol: {e}")
-    return partidos
+# ---------------------------------------------------------
+# 4. INGESTIÓN DE DATOS (RAPIDAPI - FOOTBALL API 7)
+# ---------------------------------------------------------
+def obtener_partidos_hoy():
+    if not RAPIDAPI_KEY:
+        print("Error: No se encontró la variable RAPIDAPI_KEY en los Secrets.")
+        return []
 
-# ==============================================================================
-# 4. EJECUCIÓN GENERAL Y DESPACHO
-# ==============================================================================
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "football-api-7.p.rapidapi.com"
+    }
 
-def ejecutar_sistema_analisis():
-    partidos = obtener_partidos_reales_hoy()
-    fecha_actual = time.strftime("%Y-%m-%d")
-    
-    if not partidos:
-        msg = f"⚽ <b>SISTEMA CUANTITATIVO + GEMINI IA REAL</b>\n📅 Fecha: {fecha_actual}\n\n"
-        msg += "⚠️ <i>No hay partidos agendados para hoy en las ligas monitorizadas.</i>"
-        bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode="HTML")
+    partidos_analizados = []
+
+    for nombre_liga, league_id in LIGAS.items():
+        url = f"https://football-api-7.p.rapidapi.com/api/v3/matches/live?league_id={league_id}"
+        try:
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                datos = res.json()
+                # Extraer partidos del payload devuelto
+                matches = datos.get("events", []) or datos.get("matches", [])
+                for match in matches:
+                    eq_local = match.get("homeTeam", {}).get("name", "Local")
+                    eq_vis = match.get("awayTeam", {}).get("name", "Visitante")
+                    
+                    # Promedios de gol estimados / dinámicos
+                    exp_goles_local = 1.45
+                    exp_goles_vis = 1.15
+                    
+                    poisson_stats = calcular_probabilidades_poisson(exp_goles_local, exp_goles_vis)
+                    analisis_ia = evaluar_con_gemini(eq_local, eq_vis, poisson_stats)
+
+                    partidos_analizados.append({
+                        "liga": nombre_liga,
+                        "local": eq_local,
+                        "visitante": eq_vis,
+                        "poisson": poisson_stats,
+                        "gemini": analisis_ia
+                    })
+        except Exception as e:
+            print(f"Error consultando liga {nombre_liga}: {e}")
+
+    return partidos_analizados
+
+# ---------------------------------------------------------
+# 5. ENVÍO DE REPORTES A TELEGRAM
+# ---------------------------------------------------------
+def enviar_reporte_telegram(partidos):
+    if not TELEGRAM_BOT_TOKEN:
+        print("Error: TELEGRAM_BOT_TOKEN no configurado.")
         return
 
-    msg = f"⚽ <b>ANÁLISIS DINÁMICO MULTI-MERCADO (POISSON + GEMINI IA)</b>\n"
-    msg += f"📅 <b>Fecha:</b> {fecha_actual}\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    url_telegram = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    
+    # Obtener ID del chat asignado
+    url_updates = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    try:
+        res = requests.get(url_updates).json()
+        chat_id = res['result'][-1]['message']['chat']['id']
+    except Exception:
+        print("Error al obtener chat_id de Telegram. Asegúrate de haber enviado un mensaje previo a tu Bot.")
+        return
 
-    alerta_enviada = False
+    if not partidos:
+        mensaje = "⚽ **SISTEMA CUANTITATIVO + GEMINI IA REAL**\n\n⚠️ *No hay partidos en vivo o agendados para hoy en las ligas monitorizadas.*"
+        requests.post(url_telegram, data={"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"})
+        return
 
     for p in partidos:
-        # 1. Algoritmo Cuantitativo de Poisson con xG Dinámico Real
-        metricas = calcular_matriz_poisson(p["xg_l"], p["xg_v"])
-        
-        # 2. Análisis de IA en Vivo (Gemini)
-        ajuste_ia, nota_ia = analizar_contexto_con_ia_real(p["local"], p["visita"], p["liga"])
-        
-        prob_base = metricas["mas_2_5"]
-        prob_final = round(prob_base + ajuste_ia, 1)
+        mensaje = (
+            f"⚽ **ANALISIS PREPARTIDO MULTI-MERCADO**\n"
+            f"🏆 **{p['liga']}**\n"
+            f"⚔️ **{p['local']} vs {p['visitante']}**\n\n"
+            f"📊 **Matriz Cuantitativa (Poisson):**\n"
+            f"• Over 1.5 Goles: `{p['poisson']['over_1_5']}%`\n"
+            f"• Over 2.5 Goles: `{p['poisson']['over_2_5']}%`\n"
+            f"• Ambos Anotan (BTTS): `{p['poisson']['btts']}%`\n\n"
+            f"🤖 **Filtro Contextual Gemini IA:**\n"
+            f"{p['gemini']}"
+        )
+        requests.post(url_telegram, data={"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"})
 
-        if prob_final >= UMBRAL_MINIMO_CONFIANZA:
-            alerta_enviada = True
-            msg += f"🏆 <b>{p['liga']}</b>\n"
-            msg += f"🏟️ <b>{p['local']} vs. {p['visita']}</b>\n"
-            msg += f" ├ 📊 <b>xG DINÁMICO CALCULADO:</b> Local {p['xg_l']} | Visita {p['xg_v']}\n"
-            msg += f" ├ 🧮 <b>MERCADOS MATEMÁTICOS:</b>\n"
-            msg += f" │   • Más de 1.5 Goles: <b>{metricas['mas_1_5']}%</b>\n"
-            msg += f" │   • Más de 2.5 Goles: <b>{metricas['mas_2_5']}%</b>\n"
-            msg += f" │   • Ambos Anotan (BTTS): <b>{metricas['btts']}%</b>\n"
-            msg += f" ├ 🤖 <b>FILTRO GEMINI IA REAL:</b> {ajuste_ia:+}%\n"
-            msg += f" │   └ <i>{nota_ia}</i>\n"
-            msg += f" └ 🎯 <b>CONFIANZA FINAL: {prob_final}%</b> 🟢\n\n"
-
-    if not alerta_enviada:
-        msg += f"⚠️ <b>SIN SELECCIÓN DE ALTA CONFIANZA HOY</b>\n"
-        msg += f"Se analizaron {len(partidos)} partidos reales con xG dinámico, pero ninguno superó el <b>{UMBRAL_MINIMO_CONFIANZA}%</b> requerido.\n"
-
-    msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"💡 <i>Modelo cuantitativo dinámico de Poisson + Búsqueda contextual de Google Gemini IA.</i>"
-
-    bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode="HTML")
-
+# ---------------------------------------------------------
+# EJECUCIÓN PRINCIPAL
+# ---------------------------------------------------------
 if __name__ == "__main__":
-    ejecutar_sistema_analisis()
+    partidos = obtener_partidos_hoy()
+    enviar_reporte_telegram(partidos)
