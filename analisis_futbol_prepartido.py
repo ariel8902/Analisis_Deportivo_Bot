@@ -83,7 +83,7 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
 
     # Ordenar por certeza descendente
     opciones_ordenadas = sorted(opciones, key=lambda x: x[1], reverse=True)
-     top_opcion, top_prob = opciones_ordenadas[0]
+    top_opcion, top_prob = opciones_ordenadas[0]
 
     # Filtrar únicamente las 2-3 opciones top que superen el umbral mínimo
     opciones_destacadas = [f"• **{opt}**: `{prob}%`" for opt, prob in opciones_ordenadas if prob >= UMBRAL_MINIMO_FILTRO][:3]
@@ -108,7 +108,7 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, pos_local, pos_vis, matriz_stats):
     if not GEMINI_API_KEY:
-        return "Análisis táctico cualitativo no disponible.", "Sujeto a rotación de nómina."
+        return "Análisis táctico cualitativo no disponible."
 
     prompt = (
         f"Actúa como un analista táctico deportivo cuantitativo profesional.\n"
@@ -163,9 +163,8 @@ def obtener_partidos_hoy():
                         eq_local = match.get("homeTeam", {}).get("name") or match.get("home_name", "Local")
                         eq_vis = match.get("awayTeam", {}).get("name") or match.get("away_name", "Visitante")
                         
-                        # Inferencia de posición en tabla a partir del standing de la API
                         pos_loc = match.get("homeTeam", {}).get("position", 3)
-                        pos_vis = match.get("awayTeam", {}).get("position", 12)
+                        pos_vis = match.get("awayTeam", {}).get("position", 14)
 
                         matriz_stats = evaluar_matriz_mercados(1.60, 1.05)
                         justificacion_ia = evaluar_con_gemini_avanzado(eq_local, eq_vis, pos_loc, pos_vis, matriz_stats)
@@ -182,7 +181,6 @@ def obtener_partidos_hoy():
         except Exception as e:
             print(f"Información liga {nombre_liga}: {e}")
 
-    # Partido activo si la API de fixtures no retorna partidos en ese minuto
     if not partidos_analizados:
         matriz_stats = evaluar_matriz_mercados(1.70, 0.95)
         justificacion_ia = evaluar_con_gemini_avanzado("América de Cali", "Águilas Doradas", 3, 14, matriz_stats)
