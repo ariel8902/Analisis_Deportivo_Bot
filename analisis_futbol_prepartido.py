@@ -15,27 +15,18 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0  # Porcentaje mínimo para filtrar alternativas en Telegram
 
-LIGAS = {
-    "Liga BetPlay Colombia": ["239", "240", "11308"],
-    "Premier League": ["39"],
-    "La Liga España": ["140"],
-    "Serie A Italia": ["135"],
-    "UEFA Champions League": ["2"],
-    "Copa Libertadores": ["13"]
-}
-
-EQUIPOS_CLAVE = [
-    "Nacional", "Millonarios", "América", "Santa Fe", "Junior", 
-    "Cali", "Medellín", "Bucaramanga", "Tolima", "Once Caldas"
-]
-
 # ---------------------------------------------------------
 # 2. MOTOR ESTOCÁSTICO MULTI-MERCADO (POISSON)
 # ---------------------------------------------------------
 def poisson_pmf(k, lambda_param):
+    """Calcula la función de masa de probabilidad de Poisson."""
     return (lambda_param ** k) * math.exp(-lambda_param) / math.factorial(k)
 
 def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
+    """
+    Genera la matriz de probabilidades conjunta para múltiples mercados:
+    1X2, Doble Oportunidad, Over/Under Goles, Ambos Anotan, Córners y Tarjetas.
+    """
     p_1, p_x, p_2 = 0.0, 0.0, 0.0
     p_over15, p_over25, p_under25 = 0.0, 0.0, 0.0
     p_btts_si, p_btts_no = 0.0, 0.0
@@ -46,6 +37,7 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
             p_j = poisson_pmf(j, lambda_vis)
             prob = p_i * p_j
 
+            # Mercado 1X2
             if i > j:
                 p_1 += prob
             elif i == j:
@@ -53,6 +45,7 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
             else:
                 p_2 += prob
 
+            # Líneas de Goles
             total_goles = i + j
             if total_goles > 1.5:
                 p_over15 += prob
@@ -61,11 +54,13 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
             else:
                 p_under25 += prob
 
+            # Ambos Anotan (BTTS)
             if i > 0 and j > 0:
                 p_btts_si += prob
             else:
                 p_btts_no += prob
 
+    # Inferencia de intensidad estocástica
     intensidad = lambda_local + lambda_vis
     p_corners_over85 = min(round((intensidad / 3.0) * 82.0, 1), 92.0)
     p_tarjetas_over45 = min(round((intensidad / 2.8) * 75.0, 1), 88.0)
@@ -102,13 +97,17 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
 # 3. FILTRO CUALITATIVO CON BÚSQUEDA EN TIEMPO REAL (GEMINI IA)
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, pos_local, pos_vis, matriz_stats):
+    """
+    Consulta a Gemini 2.5 Flash con Google Search Grounding activado para
+    evaluar novedades de última hora, bajas, alineaciones y rotaciones.
+    """
     if not GEMINI_API_KEY:
         return "Análisis táctico cualitativo no disponible (Falta GEMINI_API_KEY)."
 
     prompt = (
         f"Actúa como analista táctico deportivo profesional.\n"
         f"Evalúa el partido de HOY: {equipo_local} (Puesto #{pos_local}) vs {equipo_visitante} (Puesto #{pos_vis}).\n"
-        f"Datos del algoritmo: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
+        f"Datos del algoritmo de Poisson: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
         f"Goles: Over 1.5 ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%).\n\n"
         f"INSTRUCCIONES CLAVE:\n"
         f"1. Busca en Google noticias de ÚLTIMA HORA de ambos planteles para el partido de hoy (fichajes recientes, convocados, sancionados o bajas de peso).\n"
@@ -135,80 +134,68 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, pos_local, pos_v
         return f"El Local (Puesto #{pos_local}) y el Visitante (Puesto #{pos_vis}) llegan con sus datos de rendimiento alineados a la opción {matriz_stats['top_pick']}."
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN ROBUSTA MULTI-ENDPOINT DE LA AGENDA
+# 4. EXTRACCIÓN VERÁZ DE AGENDA REAL Y EVALUACIÓN
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
-    if not RAPIDAPI_KEY:
-        print("Error: RAPIDAPI_KEY no configurada.")
+    if not GEMINI_API_KEY:
         return []
 
-    headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "football-api-7.p.rapidapi.com"
-    }
-
-    partidos_analizados = []
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-    partidos_procesados = set()
+    
+    # Prompt de búsqueda rigurosa para extraer partidos reales en la web oficial
+    prompt = (
+        f"Realiza una búsqueda en tiempo real de los partidos OFICIALES de fútbol programados para HOY ({fecha_hoy}) "
+        f"en la Liga BetPlay Colombia, Premier League, La Liga España, Serie A Italia, UEFA Champions League o Copa Libertadores.\n"
+        f"Si hay partidos hoy, retorna la lista en formato JSON strictly estructurado como este:\n"
+        f'[\n  {{"liga": "Liga BetPlay Colombia", "local": "Nombre Local", "visitante": "Nombre Visitante", "pos_loc": 3, "pos_vis": 5}}\n]\n'
+        f"Si NO HAY partidos oficiales programados para hoy en esas ligas, responde únicamente la palabra: VACIO."
+    )
 
-    # Intentar endpoints por fecha y por liga
-    urls_a_probar = [
-        f"https://football-api-7.p.rapidapi.com/api/v1/date/{fecha_hoy}",
-        f"https://football-api-7.p.rapidapi.com/api/v1/custom/matches?date={fecha_hoy}"
-    ]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload_data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "tools": [{"google_search": {}}]
+    }
+    
+    payload = json.dumps(payload_data).encode('utf-8')
+    headers = {"Content-Type": "application/json"}
 
-    for nombre_liga, ids_liga in LIGAS.items():
-        for league_id in ids_liga:
-            urls_a_probar.append(f"https://football-api-7.p.rapidapi.com/api/v1/custom/matches?league_id={league_id}&date={fecha_hoy}")
+    try:
+        req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
+        with urllib.request.urlopen(req, timeout=25) as response:
+            res_data = json.loads(response.read().decode('utf-8'))
+            texto_res = res_data['candidates'][0]['content']['parts'][0]['text'].strip()
 
-    for url in urls_a_probar:
-        try:
-            req = urllib.request.Request(url, headers=headers, method='GET')
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status == 200:
-                    datos = json.loads(response.read().decode('utf-8'))
-                    matches = (
-                        datos.get("events", []) or 
-                        datos.get("matches", []) or 
-                        datos.get("data", []) or 
-                        datos.get("results", []) or 
-                        []
-                    )
-                    
-                    for match in matches:
-                        eq_local = match.get("homeTeam", {}).get("name") or match.get("home_name", "")
-                        eq_vis = match.get("awayTeam", {}).get("name") or match.get("away_name", "")
-                        
-                        clave_partido = f"{eq_local}_vs_{eq_vis}"
-                        if clave_partido in partidos_procesados or not eq_local or not eq_vis:
-                            continue
+            if "VACIO" in texto_res or not texto_res:
+                return []
 
-                        # Filtro de pertinencia
-                        tourn_id = str(match.get("tournament", {}).get("id", "")) or str(match.get("league_id", ""))
-                        es_liga_monitoreada = any(tourn_id in ids for ids in LIGAS.values())
-                        es_equipo_clave = any(eq in eq_local or eq in eq_vis for eq in EQUIPOS_CLAVE)
+            # Limpieza de marcado JSON
+            if texto_res.startswith("```json"):
+                texto_res = texto_res[7:]
+            if texto_res.endswith("```"):
+                texto_res = texto_res[:-3]
+            
+            partidos_encontrados = json.loads(texto_res.strip())
+            partidos_procesados = []
 
-                        if es_liga_monitoreada or es_equipo_clave:
-                            pos_loc = match.get("homeTeam", {}).get("position", 3)
-                            pos_vis = match.get("awayTeam", {}).get("position", 10)
-
-                            matriz_stats = evaluar_matriz_mercados(1.65, 1.05)
-                            justificacion_ia = evaluar_con_gemini_avanzado(eq_local, eq_vis, pos_loc, pos_vis, matriz_stats)
-
-                            partidos_analizados.append({
-                                "liga": "Liga BetPlay Colombia" if es_equipo_clave else "Competición Principal",
-                                "local": eq_local,
-                                "visitante": eq_vis,
-                                "pos_loc": pos_loc,
-                                "pos_vis": pos_vis,
-                                "stats": matriz_stats,
-                                "gemini": justificacion_ia
-                            })
-                            partidos_procesados.add(clave_partido)
-        except Exception as e:
-            print(f"Error consultando URL {url}: {e}")
-
-    return partidos_analizados
+            for p in partidos_encontrados:
+                matriz_stats = evaluar_matriz_mercados(1.65, 1.05)
+                justificacion_ia = evaluar_con_gemini_avanzado(
+                    p["local"], p["visitante"], p.get("pos_loc", 3), p.get("pos_vis", 10), matriz_stats
+                )
+                partidos_procesados.append({
+                    "liga": p.get("liga", "Liga BetPlay Colombia"),
+                    "local": p["local"],
+                    "visitante": p["visitante"],
+                    "pos_loc": p.get("pos_loc", 3),
+                    "pos_vis": p.get("pos_vis", 10),
+                    "stats": matriz_stats,
+                    "gemini": justificacion_ia
+                })
+            return partidos_procesados
+    except Exception as e:
+        print(f"Error consultando agenda oficial en vivo: {e}")
+        return []
 
 # ---------------------------------------------------------
 # 5. DESPACHO DE REPORTES A TELEGRAM
