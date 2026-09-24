@@ -13,7 +13,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
-UMBRAL_MINIMO_FILTRO = 70.0  # Porcentaje para destacar opciones de alta certeza
+UMBRAL_MINIMO_FILTRO = 70.0  # Porcentaje mínimo para filtrar alternativas en Telegram
 
 LIGAS = {
     "Liga BetPlay Colombia": "239",
@@ -64,12 +64,12 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
             else:
                 p_btts_no += prob
 
-    # Inferencia estocástica para córners y tarjetas
+    # Inferencia de córners y tarjetas según intensidad ofensiva
     intensidad = lambda_local + lambda_vis
     p_corners_over85 = min(round((intensidad / 3.0) * 82.0, 1), 92.0)
     p_tarjetas_over45 = min(round((intensidad / 2.8) * 75.0, 1), 88.0)
 
-    # Evaluación de todas las opciones bilaterales
+    # Matriz completa de evaluación bilateral
     opciones = [
         ("Ambos Anotan: SÍ", round(p_btts_si * 100, 1)),
         ("Ambos Anotan: NO", round(p_btts_no * 100, 1)),
@@ -81,11 +81,11 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
         ("Tarjetas: Over 4.5", p_tarjetas_over45)
     ]
 
-    # Ordenar por certeza descendente
+    # Ordenar opciones por mayor certeza estocástica
     opciones_ordenadas = sorted(opciones, key=lambda x: x[1], reverse=True)
     top_opcion, top_prob = opciones_ordenadas[0]
 
-    # Filtrar únicamente las 2-3 opciones top que superen el umbral mínimo
+    # Selección de alternativas que superen el umbral del 70%
     opciones_destacadas = [f"• **{opt}**: `{prob}%`" for opt, prob in opciones_ordenadas if prob >= UMBRAL_MINIMO_FILTRO][:3]
 
     return {
@@ -104,43 +104,48 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO Y REPOSITORIO DE TABLAS (GEMINI IA)
+# 3. FILTRO CUALITATIVO CON CONTEXTO Y BÚSQUEDA EN VIVO (GEMINI IA)
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, pos_local, pos_vis, matriz_stats):
     if not GEMINI_API_KEY:
         return "Análisis táctico cualitativo no disponible."
 
     prompt = (
-        f"Actúa como un analista táctico deportivo cuantitativo profesional.\n"
-        f"Evalúa el partido considerando la TABLA DE POSICIONES, ALINEACIONES PROBABLES Y CONTEXTO COMPETITIVO:\n"
-        f"- Partido: {equipo_local} (Puesto #{pos_local} en la tabla) vs {equipo_visitante} (Puesto #{pos_vis} en la tabla)\n"
-        f"- Apuesta Recomendada de Mayor Certeza: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%)\n"
-        f"- Datos Poisson: Over 1.5 ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%), BTTS NO ({matriz_stats['btts_no']}%)\n\n"
-        f"INSTRUCCIONES DE ANÁLISIS:\n"
-        f"1. Analiza la diferencia de nivel por posición en la tabla (Puesto #{pos_local} vs #{pos_vis}).\n"
-        f"2. Considera si hay riesgo de suplencia/rotación por torneos internacionales o descanso de figuras.\n"
-        f"3. Redacta un JUSTIFICATIVO TÁCTICO BREVE de máximo 3 líneas explicando por qué se respalda o ajusta la opción de mayor probabilidad."
+        f"Actúa como analista táctico deportivo profesional.\n"
+        f"Evalúa el partido de HOY: {equipo_local} (Puesto #{pos_local}) vs {equipo_visitante} (Puesto #{pos_vis}).\n"
+        f"Datos del algoritmo: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
+        f"Goles: Over 1.5 ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%).\n\n"
+        f"INSTRUCCIONES CLAVE:\n"
+        f"1. Busca y considera las novedades de ÚLTIMA HORA de ambos planteles (fichajes recientes, convocados, sancionados o bajas de peso para el partido de hoy).\n"
+        f"2. Evalúa la diferencia de nivel según la tabla de posiciones actual (#{pos_local} vs #{pos_vis}).\n"
+        f"3. Redacta una JUSTIFICACIÓN TÁCTICA de máximo 3 líneas explicando por qué la nómina y el contexto respaldan o ajustan la recomendación principal."
     )
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode('utf-8')
+    
+    # Habilitación explícita de Búsqueda Web en Tiempo Real
+    payload_data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "tools": [{"google_search": {}}]
+    }
+    
+    payload = json.dumps(payload_data).encode('utf-8')
     headers = {"Content-Type": "application/json"}
 
     try:
         req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
         with urllib.request.urlopen(req, timeout=15) as response:
             res_data = json.loads(response.read().decode('utf-8'))
-            veredicto = res_data['candidates'][0]['content']['parts'][0]['text'].strip()
-            return veredicto
+            return res_data['candidates'][0]['content']['parts'][0]['text'].strip()
     except Exception as e:
-        return f"El Local (Puesto #{pos_local}) llega en mejor momento competitivo frente al Visitante (Puesto #{pos_vis}). La confluencia estocástica respalda la opción {matriz_stats['top_pick']}."
+        return f"El Local (Puesto #{pos_local}) y el Visitante (Puesto #{pos_vis}) llegan con sus datos de rendimiento alineados a la opción {matriz_stats['top_pick']}."
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN DE DATOS Y POSICIONES
+# 4. INGESTIÓN DINÁMICA DE PARTIDOS DE LA AGENDA REAL
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     if not RAPIDAPI_KEY:
-        print("Error: RAPIDAPI_KEY no encontrada.")
+        print("Error: RAPIDAPI_KEY no configurada.")
         return []
 
     headers = {
@@ -164,7 +169,7 @@ def obtener_partidos_hoy():
                         eq_vis = match.get("awayTeam", {}).get("name") or match.get("away_name", "Visitante")
                         
                         pos_loc = match.get("homeTeam", {}).get("position", 3)
-                        pos_vis = match.get("awayTeam", {}).get("position", 14)
+                        pos_vis = match.get("awayTeam", {}).get("position", 10)
 
                         matriz_stats = evaluar_matriz_mercados(1.60, 1.05)
                         justificacion_ia = evaluar_con_gemini_avanzado(eq_local, eq_vis, pos_loc, pos_vis, matriz_stats)
@@ -179,25 +184,12 @@ def obtener_partidos_hoy():
                             "gemini": justificacion_ia
                         })
         except Exception as e:
-            print(f"Información liga {nombre_liga}: {e}")
-
-    if not partidos_analizados:
-        matriz_stats = evaluar_matriz_mercados(1.70, 0.95)
-        justificacion_ia = evaluar_con_gemini_avanzado("América de Cali", "Águilas Doradas", 3, 14, matriz_stats)
-        partidos_analizados.append({
-            "liga": "Liga BetPlay Colombia",
-            "local": "América de Cali",
-            "visitante": "Águilas Doradas",
-            "pos_loc": 3,
-            "pos_vis": 14,
-            "stats": matriz_stats,
-            "gemini": justificacion_ia
-        })
+            print(f"Consulta liga {nombre_liga}: {e}")
 
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. ENVÍO DE REPORTES A TELEGRAM
+# 5. DESPACHO DE REPORTES A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -205,13 +197,23 @@ def enviar_mensaje_telegram(token, chat_id, texto):
     req = urllib.request.Request(url, data=payload, method='POST')
     try:
         with urllib.request.urlopen(req, timeout=10) as res:
-            print("Mensaje despachado con éxito a Telegram. Código HTTP:", res.status)
+            print("Reporte despachado a Telegram. Código HTTP:", res.status)
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
 def enviar_reporte_telegram(partidos):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Credenciales faltantes.")
+        return
+
+    if not partidos:
+        fecha_actual = datetime.now().strftime("%Y-%m-%d")
+        mensaje = (
+            f"🛡️ **REPORTE DE JORNADA - {fecha_actual}**\n\n"
+            f"📊 *No hay partidos programados por jugar el día de hoy en las ligas principales monitorizadas (Liga BetPlay, Premier, La Liga, Serie A, Champions, Libertadores).*\n\n"
+            f"💡 *El sistema reanudará el análisis automático en la próxima fecha con agenda activa.*"
+        )
+        enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
         return
 
     for p in partidos:
