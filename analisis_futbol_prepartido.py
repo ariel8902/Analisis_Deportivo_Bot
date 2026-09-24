@@ -15,7 +15,6 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0  # Porcentaje mínimo para filtrar alternativas en Telegram
 
-# Ligas monitoreadas con soporte de IDs primarios y secundarios
 LIGAS = {
     "Liga BetPlay Colombia": ["239", "240", "11308"],
     "Premier League": ["39"],
@@ -24,6 +23,11 @@ LIGAS = {
     "UEFA Champions League": ["2"],
     "Copa Libertadores": ["13"]
 }
+
+EQUIPOS_CLAVE = [
+    "Nacional", "Millonarios", "América", "Santa Fe", "Junior", 
+    "Cali", "Medellín", "Bucaramanga", "Tolima", "Once Caldas"
+]
 
 # ---------------------------------------------------------
 # 2. MOTOR ESTOCÁSTICO MULTI-MERCADO (POISSON)
@@ -131,7 +135,7 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, pos_local, pos_v
         return f"El Local (Puesto #{pos_local}) y el Visitante (Puesto #{pos_vis}) llegan con sus datos de rendimiento alineados a la opción {matriz_stats['top_pick']}."
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN MULTI-ID Y BÚSQUEDA ROBUSTA DE PARTIDOS
+# 4. INGESTIÓN ROBUSTA MULTI-ENDPOINT DE LA AGENDA
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     if not RAPIDAPI_KEY:
@@ -145,62 +149,64 @@ def obtener_partidos_hoy():
 
     partidos_analizados = []
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+    partidos_procesados = set()
+
+    # Intentar endpoints por fecha y por liga
+    urls_a_probar = [
+        f"https://football-api-7.p.rapidapi.com/api/v1/date/{fecha_hoy}",
+        f"https://football-api-7.p.rapidapi.com/api/v1/custom/matches?date={fecha_hoy}"
+    ]
 
     for nombre_liga, ids_liga in LIGAS.items():
-        encontrado_en_liga = False
         for league_id in ids_liga:
-            if encontrado_en_liga:
-                break
-                
-            urls = [
-                f"https://football-api-7.p.rapidapi.com/api/v1/custom/matches?league_id={league_id}&date={fecha_hoy}",
-                f"https://football-api-7.p.rapidapi.com/api/v1/date/{fecha_hoy}"
-            ]
-            
-            for url in urls:
-                try:
-                    req = urllib.request.Request(url, headers=headers, method='GET')
-                    with urllib.request.urlopen(req, timeout=10) as response:
-                        if response.status == 200:
-                            datos = json.loads(response.read().decode('utf-8'))
-                            matches = (
-                                datos.get("events", []) or 
-                                datos.get("matches", []) or 
-                                datos.get("data", []) or 
-                                datos.get("results", []) or 
-                                []
-                            )
-                            
-                            for match in matches:
-                                eq_local = match.get("homeTeam", {}).get("name") or match.get("home_name", "")
-                                eq_vis = match.get("awayTeam", {}).get("name") or match.get("away_name", "")
-                                
-                                # Si consultamos la lista general de fechas, filtramos por la liga o por equipos clave
-                                is_target_match = False
-                                if str(match.get("tournament", {}).get("id", "")) == league_id or str(match.get("league_id", "")) == league_id:
-                                    is_target_match = True
-                                elif "Nacional" in eq_local or "Millonarios" in eq_local or "Nacional" in eq_vis or "Millonarios" in eq_vis:
-                                    is_target_match = True
-                                
-                                if is_target_match and eq_local and eq_vis:
-                                    pos_loc = match.get("homeTeam", {}).get("position", 3)
-                                    pos_vis = match.get("awayTeam", {}).get("position", 10)
+            urls_a_probar.append(f"https://football-api-7.p.rapidapi.com/api/v1/custom/matches?league_id={league_id}&date={fecha_hoy}")
 
-                                    matriz_stats = evaluar_matriz_mercados(1.65, 1.05)
-                                    justificacion_ia = evaluar_con_gemini_avanzado(eq_local, eq_vis, pos_loc, pos_vis, matriz_stats)
+    for url in urls_a_probar:
+        try:
+            req = urllib.request.Request(url, headers=headers, method='GET')
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    datos = json.loads(response.read().decode('utf-8'))
+                    matches = (
+                        datos.get("events", []) or 
+                        datos.get("matches", []) or 
+                        datos.get("data", []) or 
+                        datos.get("results", []) or 
+                        []
+                    )
+                    
+                    for match in matches:
+                        eq_local = match.get("homeTeam", {}).get("name") or match.get("home_name", "")
+                        eq_vis = match.get("awayTeam", {}).get("name") or match.get("away_name", "")
+                        
+                        clave_partido = f"{eq_local}_vs_{eq_vis}"
+                        if clave_partido in partidos_procesados or not eq_local or not eq_vis:
+                            continue
 
-                                    partidos_analizados.append({
-                                        "liga": nombre_liga,
-                                        "local": eq_local,
-                                        "visitante": eq_vis,
-                                        "pos_loc": pos_loc,
-                                        "pos_vis": pos_vis,
-                                        "stats": matriz_stats,
-                                        "gemini": justificacion_ia
-                                    })
-                                    encontrado_en_liga = True
-                except Exception as e:
-                    print(f"Intento con URL/ID {league_id}: {e}")
+                        # Filtro de pertinencia
+                        tourn_id = str(match.get("tournament", {}).get("id", "")) or str(match.get("league_id", ""))
+                        es_liga_monitoreada = any(tourn_id in ids for ids in LIGAS.values())
+                        es_equipo_clave = any(eq in eq_local or eq in eq_vis for eq in EQUIPOS_CLAVE)
+
+                        if es_liga_monitoreada or es_equipo_clave:
+                            pos_loc = match.get("homeTeam", {}).get("position", 3)
+                            pos_vis = match.get("awayTeam", {}).get("position", 10)
+
+                            matriz_stats = evaluar_matriz_mercados(1.65, 1.05)
+                            justificacion_ia = evaluar_con_gemini_avanzado(eq_local, eq_vis, pos_loc, pos_vis, matriz_stats)
+
+                            partidos_analizados.append({
+                                "liga": "Liga BetPlay Colombia" if es_equipo_clave else "Competición Principal",
+                                "local": eq_local,
+                                "visitante": eq_vis,
+                                "pos_loc": pos_loc,
+                                "pos_vis": pos_vis,
+                                "stats": matriz_stats,
+                                "gemini": justificacion_ia
+                            })
+                            partidos_procesados.add(clave_partido)
+        except Exception as e:
+            print(f"Error consultando URL {url}: {e}")
 
     return partidos_analizados
 
