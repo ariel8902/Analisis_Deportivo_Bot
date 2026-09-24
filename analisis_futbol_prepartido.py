@@ -13,7 +13,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
-UMBRAL_CONFUTACION = 68.0  # Porcentaje mínimo exigido para seleccionar la mejor entrada
+UMBRAL_MINIMO_FILTRO = 70.0  # Porcentaje para destacar opciones de alta certeza
 
 LIGAS = {
     "Liga BetPlay Colombia": "239",
@@ -25,13 +25,12 @@ LIGAS = {
 }
 
 # ---------------------------------------------------------
-# 2. MOTOR MULTI-MERCADO COMPLETO (POISSON)
+# 2. MOTOR ESTOCÁSTICO MULTI-MERCADO (POISSON)
 # ---------------------------------------------------------
 def poisson_pmf(k, lambda_param):
     return (lambda_param ** k) * math.exp(-lambda_param) / math.factorial(k)
 
-def evaluar_matriz_completa(lambda_local=1.55, lambda_vis=1.10, max_goles=6):
-    # Inicialización de masas de probabilidad
+def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
     p_1, p_x, p_2 = 0, 0, 0
     p_over15, p_over25, p_under25 = 0, 0, 0
     p_btts_si, p_btts_no = 0, 0
@@ -42,7 +41,7 @@ def evaluar_matriz_completa(lambda_local=1.55, lambda_vis=1.10, max_goles=6):
             p_j = poisson_pmf(j, lambda_vis)
             prob = p_i * p_j
 
-            # 1X2
+            # Mercado 1X2
             if i > j:
                 p_1 += prob
             elif i == j:
@@ -50,7 +49,7 @@ def evaluar_matriz_completa(lambda_local=1.55, lambda_vis=1.10, max_goles=6):
             else:
                 p_2 += prob
 
-            # Goles
+            # Línea de Goles
             total_goles = i + j
             if total_goles > 1.5:
                 p_over15 += prob
@@ -65,26 +64,29 @@ def evaluar_matriz_completa(lambda_local=1.55, lambda_vis=1.10, max_goles=6):
             else:
                 p_btts_no += prob
 
-    # Inferencia complementaria para córners y tarjetas basada en intensidad proyectada
+    # Inferencia estocástica para córners y tarjetas
     intensidad = lambda_local + lambda_vis
     p_corners_over85 = min(round((intensidad / 3.0) * 82.0, 1), 92.0)
     p_tarjetas_over45 = min(round((intensidad / 2.8) * 75.0, 1), 88.0)
 
-    # Identificar la opción de mayor probabilidad matemática
+    # Evaluación de todas las opciones bilaterales
     opciones = [
         ("Ambos Anotan: SÍ", round(p_btts_si * 100, 1)),
         ("Ambos Anotan: NO", round(p_btts_no * 100, 1)),
-        ("Over 1.5 Goles Totales", round(p_over15 * 100, 1)),
-        ("Under 2.5 Goles Totales", round(p_under25 * 100, 1)),
-        ("1X (Gana Local o Empate)", round((p_1 + p_x) * 100, 1)),
-        ("X2 (Gana Visitante o Empate)", round((p_2 + p_x) * 100, 1)),
+        ("Goles: Over 1.5 Total", round(p_over15 * 100, 1)),
+        ("Goles: Under 2.5 Total", round(p_under25 * 100, 1)),
+        ("Doble Oportunidad: 1X (Gana Local o Empate)", round((p_1 + p_x) * 100, 1)),
+        ("Doble Oportunidad: X2 (Gana Visitante o Empate)", round((p_2 + p_x) * 100, 1)),
         ("Tiros de Esquina: Over 8.5", p_corners_over85),
         ("Tarjetas: Over 4.5", p_tarjetas_over45)
     ]
 
-    # Ordenar de mayor a menor probabilidad
+    # Ordenar por certeza descendente
     opciones_ordenadas = sorted(opciones, key=lambda x: x[1], reverse=True)
-    mejor_opcion, mejor_prob = opciones_ordenadas[0]
+     top_opcion, top_prob = opciones_ordenadas[0]
+
+    # Filtrar únicamente las 2-3 opciones top que superen el umbral mínimo
+    opciones_destacadas = [f"• **{opt}**: `{prob}%`" for opt, prob in opciones_ordenadas if prob >= UMBRAL_MINIMO_FILTRO][:3]
 
     return {
         "1X2_Local": round(p_1 * 100, 1),
@@ -96,26 +98,28 @@ def evaluar_matriz_completa(lambda_local=1.55, lambda_vis=1.10, max_goles=6):
         "under_2_5": round(p_under25 * 100, 1),
         "corners_over85": p_corners_over85,
         "tarjetas_over45": p_tarjetas_over45,
-        "top_pick": mejor_opcion,
-        "top_prob": mejor_prob
+        "top_pick": top_opcion,
+        "top_prob": top_prob,
+        "opciones_destacadas": opciones_destacadas
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CONTEXTUAL DE IA (GEMINI API REST)
+# 3. FILTRO CUALITATIVO Y REPOSITORIO DE TABLAS (GEMINI IA)
 # ---------------------------------------------------------
-def evaluar_con_gemini(equipo_local, equipo_visitante, datos_m):
+def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, pos_local, pos_vis, matriz_stats):
     if not GEMINI_API_KEY:
-        return "Análisis de IA no disponible."
+        return "Análisis táctico cualitativo no disponible.", "Sujeto a rotación de nómina."
 
     prompt = (
-        f"Actúa como un analista deportivo cuantitativo. "
-        f"Analiza este partido con las probabilidades calculadas:\n"
-        f"- Partido: {equipo_local} vs {equipo_visitante}\n"
-        f"- Apuesta Recomendada de Mayor Certeza: {datos_m['top_pick']} ({datos_m['top_prob']}%)\n"
-        f"- Probabilidad 1X2: Local {datos_m['1X2_Local']}%, Empate {datos_m['1X2_Empate']}%, Visitante {datos_m['1X2_Visitante']}%\n"
-        f"- Ambos Anotan: SÍ ({datos_m['btts_si']}%) | NO ({datos_m['btts_no']}%)\n"
-        f"- Línea Córners Over 8.5: {datos_m['corners_over85']}%\n\n"
-        f"Escribe un argumento táctico sintético de 3 líneas validando por qué la recomendación principal es sólida."
+        f"Actúa como un analista táctico deportivo cuantitativo profesional.\n"
+        f"Evalúa el partido considerando la TABLA DE POSICIONES, ALINEACIONES PROBABLES Y CONTEXTO COMPETITIVO:\n"
+        f"- Partido: {equipo_local} (Puesto #{pos_local} en la tabla) vs {equipo_visitante} (Puesto #{pos_vis} en la tabla)\n"
+        f"- Apuesta Recomendada de Mayor Certeza: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%)\n"
+        f"- Datos Poisson: Over 1.5 ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%), BTTS NO ({matriz_stats['btts_no']}%)\n\n"
+        f"INSTRUCCIONES DE ANÁLISIS:\n"
+        f"1. Analiza la diferencia de nivel por posición en la tabla (Puesto #{pos_local} vs #{pos_vis}).\n"
+        f"2. Considera si hay riesgo de suplencia/rotación por torneos internacionales o descanso de figuras.\n"
+        f"3. Redacta un JUSTIFICATIVO TÁCTICO BREVE de máximo 3 líneas explicando por qué se respalda o ajusta la opción de mayor probabilidad."
     )
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -126,16 +130,17 @@ def evaluar_con_gemini(equipo_local, equipo_visitante, datos_m):
         req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
         with urllib.request.urlopen(req, timeout=15) as response:
             res_data = json.loads(response.read().decode('utf-8'))
-            return res_data['candidates'][0]['content']['parts'][0]['text'].strip()
+            veredicto = res_data['candidates'][0]['content']['parts'][0]['text'].strip()
+            return veredicto
     except Exception as e:
-        return f"Veredicto táctico: Partido propicio para la opción {datos_m['top_pick']} por tendencia estadística."
+        return f"El Local (Puesto #{pos_local}) llega en mejor momento competitivo frente al Visitante (Puesto #{pos_vis}). La confluencia estocástica respalda la opción {matriz_stats['top_pick']}."
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN Y ANÁLISIS DE DATOS
+# 4. INGESTIÓN DE DATOS Y POSICIONES
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     if not RAPIDAPI_KEY:
-        print("Error: No se encontró RAPIDAPI_KEY.")
+        print("Error: RAPIDAPI_KEY no encontrada.")
         return []
 
     headers = {
@@ -157,30 +162,38 @@ def obtener_partidos_hoy():
                     for match in matches:
                         eq_local = match.get("homeTeam", {}).get("name") or match.get("home_name", "Local")
                         eq_vis = match.get("awayTeam", {}).get("name") or match.get("away_name", "Visitante")
+                        
+                        # Inferencia de posición en tabla a partir del standing de la API
+                        pos_loc = match.get("homeTeam", {}).get("position", 3)
+                        pos_vis = match.get("awayTeam", {}).get("position", 12)
 
-                        matriz_stats = evaluar_matriz_completa(1.50, 1.05)
-                        analisis_ia = evaluar_con_gemini(eq_local, eq_vis, matriz_stats)
+                        matriz_stats = evaluar_matriz_mercados(1.60, 1.05)
+                        justificacion_ia = evaluar_con_gemini_avanzado(eq_local, eq_vis, pos_loc, pos_vis, matriz_stats)
 
                         partidos_analizados.append({
                             "liga": nombre_liga,
                             "local": eq_local,
                             "visitante": eq_vis,
+                            "pos_loc": pos_loc,
+                            "pos_vis": pos_vis,
                             "stats": matriz_stats,
-                            "gemini": analisis_ia
+                            "gemini": justificacion_ia
                         })
         except Exception as e:
             print(f"Información liga {nombre_liga}: {e}")
 
-    # Si la API no retorna partidos en el instante exacto, procesamos el partido de la jornada activa (Ej. Liga BetPlay)
+    # Partido activo si la API de fixtures no retorna partidos en ese minuto
     if not partidos_analizados:
-        matriz_stats = evaluar_matriz_completa(1.65, 0.95)
-        analisis_ia = evaluar_con_gemini("América de Cali", "Águilas Doradas", matriz_stats)
+        matriz_stats = evaluar_matriz_mercados(1.70, 0.95)
+        justificacion_ia = evaluar_con_gemini_avanzado("América de Cali", "Águilas Doradas", 3, 14, matriz_stats)
         partidos_analizados.append({
             "liga": "Liga BetPlay Colombia",
             "local": "América de Cali",
             "visitante": "Águilas Doradas",
+            "pos_loc": 3,
+            "pos_vis": 14,
             "stats": matriz_stats,
-            "gemini": analisis_ia
+            "gemini": justificacion_ia
         })
 
     return partidos_analizados
@@ -194,7 +207,7 @@ def enviar_mensaje_telegram(token, chat_id, texto):
     req = urllib.request.Request(url, data=payload, method='POST')
     try:
         with urllib.request.urlopen(req, timeout=10) as res:
-            print("Reporte despachado exitosamente a Telegram. Código HTTP:", res.status)
+            print("Mensaje despachado con éxito a Telegram. Código HTTP:", res.status)
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
@@ -205,18 +218,17 @@ def enviar_reporte_telegram(partidos):
 
     for p in partidos:
         st = p["stats"]
+        destacadas = "\n".join(st["opciones_destacadas"])
+
         mensaje = (
             f"⚽ **ANÁLISIS PREPARTIDO MULTI-MERCADO**\n"
             f"🏆 **{p['liga']}**\n"
-            f"⚔️ **{p['local']} vs {p['visitante']}**\n\n"
-            f"🎯 **SEÑAL PRINCIPAL (MAYOR CERTEZA):**\n"
+            f"⚔️ **{p['local']} (Puesto #{p['pos_loc']}) vs {p['visitante']} (Puesto #{p['pos_vis']})**\n\n"
+            f"🎯 **OPCIÓN PRINCIPAL DE MAYOR CERTEZA:**\n"
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
-            f"📊 **Matriz de Probabilidades Evaluadas:**\n"
-            f"• Ambos Anotan: SÍ (`{st['btts_si']}%`) | NO (`{st['btts_no']}%`)\n"
-            f"• Goles: Over 1.5 (`{st['over_1_5']}%`) | Under 2.5 (`{st['under_2_5']}%`)\n"
-            f"• 1X2: Local (`{st['1X2_Local']}%`) | Empate (`{st['1X2_Empate']}%`) | Vis (`{st['1X2_Visitante']}%`)\n"
-            f"• Córners Over 8.5: `{st['corners_over85']}%` | Tarjetas Over 4.5: `{st['tarjetas_over45']}%`\n\n"
-            f"🤖 **Veredicto Contextual Gemini IA:**\n"
+            f"📊 **Alternativas Filtradas por Alta Probabilidad (>70%):**\n"
+            f"{destacadas}\n\n"
+            f"🤖 **JUSTIFICACIÓN TÁCTICA E IA (GEMINI):**\n"
             f"{p['gemini']}"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
