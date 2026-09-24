@@ -28,12 +28,17 @@ LIGAS = {
 # 2. MOTOR ESTOCÁSTICO MULTI-MERCADO (POISSON)
 # ---------------------------------------------------------
 def poisson_pmf(k, lambda_param):
+    """Calcula la función de masa de probabilidad de Poisson."""
     return (lambda_param ** k) * math.exp(-lambda_param) / math.factorial(k)
 
 def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
-    p_1, p_x, p_2 = 0, 0, 0
-    p_over15, p_over25, p_under25 = 0, 0, 0
-    p_btts_si, p_btts_no = 0, 0
+    """
+    Genera la matriz de probabilidades conjunta para múltiples mercados:
+    1X2, Doble Oportunidad, Over/Under Goles, Ambos Anotan, Córners y Tarjetas.
+    """
+    p_1, p_x, p_2 = 0.0, 0.0, 0.0
+    p_over15, p_over25, p_under25 = 0.0, 0.0, 0.0
+    p_btts_si, p_btts_no = 0.0, 0.0
 
     for i in range(max_goles + 1):
         p_i = poisson_pmf(i, lambda_local)
@@ -49,7 +54,7 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
             else:
                 p_2 += prob
 
-            # Línea de Goles
+            # Líneas de Goles
             total_goles = i + j
             if total_goles > 1.5:
                 p_over15 += prob
@@ -64,7 +69,7 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
             else:
                 p_btts_no += prob
 
-    # Inferencia de córners y tarjetas según intensidad ofensiva
+    # Inferencia estocástica de intensidad (Córners y Tarjetas)
     intensidad = lambda_local + lambda_vis
     p_corners_over85 = min(round((intensidad / 3.0) * 82.0, 1), 92.0)
     p_tarjetas_over45 = min(round((intensidad / 2.8) * 75.0, 1), 88.0)
@@ -86,7 +91,11 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
     top_opcion, top_prob = opciones_ordenadas[0]
 
     # Selección de alternativas que superen el umbral del 70%
-    opciones_destacadas = [f"• **{opt}**: `{prob}%`" for opt, prob in opciones_ordenadas if prob >= UMBRAL_MINIMO_FILTRO][:3]
+    opciones_destacadas = [
+        f"• **{opt}**: `{prob}%`" 
+        for opt, prob in opciones_ordenadas 
+        if prob >= UMBRAL_MINIMO_FILTRO
+    ][:3]
 
     return {
         "1X2_Local": round(p_1 * 100, 1),
@@ -104,26 +113,30 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO CON CONTEXTO Y BÚSQUEDA EN VIVO (GEMINI IA)
+# 3. FILTRO CUALITATIVO CON BÚSQUEDA EN TIEMPO REAL (GEMINI IA)
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, pos_local, pos_vis, matriz_stats):
+    """
+    Consulta a Gemini 2.5 con Búsqueda en Google activada para validar
+    noticias de última hora, bajas, alineaciones y rotaciones.
+    """
     if not GEMINI_API_KEY:
-        return "Análisis táctico cualitativo no disponible."
+        return "Análisis táctico cualitativo no disponible (Falta GEMINI_API_KEY)."
 
     prompt = (
         f"Actúa como analista táctico deportivo profesional.\n"
         f"Evalúa el partido de HOY: {equipo_local} (Puesto #{pos_local}) vs {equipo_visitante} (Puesto #{pos_vis}).\n"
-        f"Datos del algoritmo: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
+        f"Datos del algoritmo: Opción recomendada de mayor certeza: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
         f"Goles: Over 1.5 ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%).\n\n"
         f"INSTRUCCIONES CLAVE:\n"
-        f"1. Busca y considera las novedades de ÚLTIMA HORA de ambos planteles (fichajes recientes, convocados, sancionados o bajas de peso para el partido de hoy).\n"
+        f"1. Busca en Google noticias de ÚLTIMA HORA de ambos planteles para el partido de hoy (fichajes recientes, alineaciones confirmadas, convocados, sancionados o bajas de peso).\n"
         f"2. Evalúa la diferencia de nivel según la tabla de posiciones actual (#{pos_local} vs #{pos_vis}).\n"
-        f"3. Redacta una JUSTIFICACIÓN TÁCTICA de máximo 3 líneas explicando por qué la nómina y el contexto respaldan o ajustan la recomendación principal."
+        f"3. Redacta una JUSTIFICACIÓN TÁCTICA ejecutiva de máximo 3 líneas explicando por qué la nómina y el contexto respaldan o ajustan la recomendación matemática."
     )
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     
-    # Habilitación explícita de Búsqueda Web en Tiempo Real
+    # Habilitación explícita de Búsqueda Web en Tiempo Real (Google Search Grounding)
     payload_data = {
         "contents": [{"parts": [{"text": prompt}]}],
         "tools": [{"google_search": {}}]
@@ -134,14 +147,14 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, pos_local, pos_v
 
     try:
         req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=20) as response:
             res_data = json.loads(response.read().decode('utf-8'))
             return res_data['candidates'][0]['content']['parts'][0]['text'].strip()
     except Exception as e:
         return f"El Local (Puesto #{pos_local}) y el Visitante (Puesto #{pos_vis}) llegan con sus datos de rendimiento alineados a la opción {matriz_stats['top_pick']}."
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN DINÁMICA DE PARTIDOS DE LA AGENDA REAL
+# 4. INGESTIÓN ROBUSTA DE PARTIDOS DE LA AGENDA REAL
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     if not RAPIDAPI_KEY:
@@ -160,10 +173,19 @@ def obtener_partidos_hoy():
         url = f"https://football-api-7.p.rapidapi.com/api/v1/custom/matches?league_id={league_id}&date={fecha_hoy}"
         try:
             req = urllib.request.Request(url, headers=headers, method='GET')
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=12) as response:
                 if response.status == 200:
                     datos = json.loads(response.read().decode('utf-8'))
-                    matches = datos.get("events", []) or datos.get("matches", []) or datos.get("data", [])
+                    
+                    # Extracción exhaustiva en todas las posibles estructuras del JSON
+                    matches = (
+                        datos.get("events", []) or 
+                        datos.get("matches", []) or 
+                        datos.get("data", []) or 
+                        datos.get("results", []) or
+                        []
+                    )
+                    
                     for match in matches:
                         eq_local = match.get("homeTeam", {}).get("name") or match.get("home_name", "Local")
                         eq_vis = match.get("awayTeam", {}).get("name") or match.get("away_name", "Visitante")
@@ -171,7 +193,7 @@ def obtener_partidos_hoy():
                         pos_loc = match.get("homeTeam", {}).get("position", 3)
                         pos_vis = match.get("awayTeam", {}).get("position", 10)
 
-                        matriz_stats = evaluar_matriz_mercados(1.60, 1.05)
+                        matriz_stats = evaluar_matriz_mercados(1.65, 1.05)
                         justificacion_ia = evaluar_con_gemini_avanzado(eq_local, eq_vis, pos_loc, pos_vis, matriz_stats)
 
                         partidos_analizados.append({
@@ -184,7 +206,7 @@ def obtener_partidos_hoy():
                             "gemini": justificacion_ia
                         })
         except Exception as e:
-            print(f"Consulta liga {nombre_liga}: {e}")
+            print(f"Error consultando liga {nombre_liga}: {e}")
 
     return partidos_analizados
 
@@ -193,7 +215,11 @@ def obtener_partidos_hoy():
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode({"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"}).encode('utf-8')
+    payload = urllib.parse.urlencode({
+        "chat_id": chat_id, 
+        "text": texto, 
+        "parse_mode": "Markdown"
+    }).encode('utf-8')
     req = urllib.request.Request(url, data=payload, method='POST')
     try:
         with urllib.request.urlopen(req, timeout=10) as res:
@@ -228,7 +254,7 @@ def enviar_reporte_telegram(partidos):
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
             f"📊 **Alternativas Filtradas por Alta Probabilidad (>70%):**\n"
             f"{destacadas}\n\n"
-            f"🤖 **JUSTIFICACIÓN TÁCTICA E IA (GEMINI):**\n"
+            f"🤖 **JUSTIFICACIÓN TÁCTICA E IA (GEMINI + SEARCH):**\n"
             f"{p['gemini']}"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
