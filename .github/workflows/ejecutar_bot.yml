@@ -1,4 +1,4 @@
-name: Ejecutar Bot de Analisis Deportivo 8:00 AM
+name: Ejecutar Bot de Análisis Deportivo 8:00 AM
 
 on:
   schedule:
@@ -10,18 +10,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Descargar codigo del repositorio
+      - name: Descargar código
         uses: actions/checkout@v3
 
-      - name: Configurar Python
+      - name: Configurar Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Ejecutar motor de analisis de Python
+      - name: Instalar Dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-generativeai
+
+      - name: Ejecutar motor de análisis de Python
         env:
-          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: python analisis_futbol_prepartido.py
