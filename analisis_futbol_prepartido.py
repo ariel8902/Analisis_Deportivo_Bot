@@ -18,13 +18,13 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0  # Umbral de certeza del 70%
-NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones por partido
+NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
 
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ---------------------------------------------------------
-# 2. MOTOR CUANTITATIVO: DIXON-COLES + xG + MONTE CARLO
+# 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + xG + MONTE CARLO)
 # ---------------------------------------------------------
 def poisson_pmf(k, lambda_param):
     """Calcula la función de masa de probabilidad de Poisson pura."""
@@ -35,7 +35,7 @@ def poisson_pmf(k, lambda_param):
 def factor_dixon_coles(x, y, lambda_loc, lambda_vis, rho=-0.11):
     """
     Factor de corrección tau de Dixon & Coles (1997)
-    para ajustar la dependencia en marcadores bajos (0-0, 1-0, 0-1, 1-1).
+    Ajuste estricto de masa de probabilidad en marcadores bajos (0-0, 1-0, 0-1, 1-1).
     """
     if x == 0 and y == 0:
         return 1.0 - (lambda_loc * lambda_vis * rho)
@@ -49,9 +49,7 @@ def factor_dixon_coles(x, y, lambda_loc, lambda_vis, rho=-0.11):
         return 1.0
 
 def calcular_lambda_xg_ponderado(partidos_recientes, xi=0.005):
-    """
-    Calcula la tasa esperada usando xG (Expected Goals) ponderado por Decaimiento Temporal.
-    """
+    """Calcula la tasa esperada usando xG (Expected Goals) ponderado por Decaimiento Temporal."""
     if not partidos_recientes:
         return 1.45
     
@@ -60,7 +58,7 @@ def calcular_lambda_xg_ponderado(partidos_recientes, xi=0.005):
     
     for p in partidos_recientes:
         dias_antiguedad = p.get("dias_atras", 10)
-        xg = p.get("xg", p.get("goles", 1.0))  # Prioriza xG sobre goles reales
+        xg = p.get("xg", p.get("goles", 1.0))
         peso = math.exp(-xi * dias_antiguedad)
         
         suma_ponderada += xg * peso
@@ -68,7 +66,7 @@ def calcular_lambda_xg_ponderado(partidos_recientes, xi=0.005):
         
     return max(round(suma_ponderada / suma_pesos, 2), 0.5)
 
-def generar_matriz_probabilidades_teorica(lambda_loc, lambda_vis, max_goles=6):
+def generar_matriz_dixon_coles(lambda_loc, lambda_vis, max_goles=6):
     """Construye la matriz conjunta de densidad de probabilidad teórica."""
     matriz = {}
     for i in range(max_goles + 1):
@@ -81,13 +79,14 @@ def generar_matriz_probabilidades_teorica(lambda_loc, lambda_vis, max_goles=6):
 
 def simular_monte_carlo(matriz_prob, num_simulaciones=10000, k_altitud=1.0, k_temperatura=1.0, lambda_tot=2.5):
     """
-    Ejecuta 10,000 simulaciones estocásticas en memoria por partido
-    para derivar frecuencias reales de múltiples mercados.
+    Ejecuta 10,000 simulaciones de Monte Carlo con ordenamiento jerárquico:
+    Prioridad 1: Resultados del Partido / Doble Oportunidad / Goles (Dixon-Coles).
+    Prioridad 2: Mercado secundario calibrado (Córners / Tarjetas).
     """
     resultados = list(matriz_prob.keys())
     pesos = list(matriz_prob.values())
     
-    # Muestreo estocástico de 10,000 partidos virtuales
+    # Muestreo de 10,000 partidos virtuales
     partidos_simulados = random.choices(resultados, weights=pesos, k=num_simulaciones)
     
     cierre_1, cierre_x, cierre_2 = 0, 0, 0
@@ -115,7 +114,6 @@ def simular_monte_carlo(matriz_prob, num_simulaciones=10000, k_altitud=1.0, k_te
         else:
             btts_no += 1
 
-    # Porcentajes de frecuencia relativa procedentes de las 10,000 simulaciones
     p_1 = (cierre_1 / num_simulaciones) * 100
     p_x = (cierre_x / num_simulaciones) * 100
     p_2 = (cierre_2 / num_simulaciones) * 100
@@ -127,25 +125,39 @@ def simular_monte_carlo(matriz_prob, num_simulaciones=10000, k_altitud=1.0, k_te
     p_btts_si = (btts_si / num_simulaciones) * 100
     p_btts_no = (btts_no / num_simulaciones) * 100
 
-    p_corners_over85 = min(round(((lambda_tot / 2.9) * 80.0) * k_altitud, 1), 94.0)
-    p_tarjetas_over45 = min(round(((lambda_tot / 2.7) * 76.0) * k_temperatura, 1), 92.0)
+    # Calibración generalizada y conservadora de líneas secundarias (Córners y Tarjetas)
+    p_corners_over85 = min(round(((lambda_tot / 3.2) * 68.0) * k_altitud, 1), 78.0)
+    p_tarjetas_over45 = min(round(((lambda_tot / 3.0) * 65.0) * k_temperatura, 1), 76.0)
 
-    opciones = [
-        ("Ambos Anotan: SÍ", round(p_btts_si, 1)),
-        ("Ambos Anotan: NO", round(p_btts_no, 1)),
-        ("Goles: Over 1.5 Total", round(p_over15, 1)),
-        ("Goles: Under 2.5 Total", round(p_under25, 1)),
+    # Mercados Principales de Partido
+    opciones_principales = [
         ("Doble Oportunidad: 1X (Gana Local o Empate)", round(p_1x, 1)),
         ("Doble Oportunidad: X2 (Gana Visitante o Empate)", round(p_x2, 1)),
+        ("Goles: Over 1.5 Total", round(p_over15, 1)),
+        ("Goles: Under 2.5 Total", round(p_under25, 1)),
+        ("Ambos Anotan: SÍ", round(p_btts_si, 1)),
+        ("Ambos Anotan: NO", round(p_btts_no, 1)),
+    ]
+
+    # Mercados Secundarios
+    opciones_secundarias = [
         ("Tiros de Esquina: Over 8.5", p_corners_over85),
         ("Tarjetas: Over 4.5", p_tarjetas_over45)
     ]
 
-    opciones_ordenadas = sorted(opciones, key=lambda x: x[1], reverse=True)
-    top_opcion, top_prob = opciones_ordenadas[0]
+    # Ordenar principales por probabilidad
+    principales_ordenadas = sorted(opciones_principales, key=lambda x: x[1], reverse=True)
+    secundarias_ordenadas = sorted(opciones_secundarias, key=lambda x: x[1], reverse=True)
+
+    # La Opción Principal SIEMPRE proviene del mercado de mayor solidez (Dixon-Coles)
+    top_opcion, top_prob = principales_ordenadas[0]
+
+    # Consolidar Top 3 priorizando la solidez matemática del resultado
+    todas_ordenadas = principales_ordenadas[:2] + secundarias_ordenadas[:1]
+    todas_ordenadas = sorted(todas_ordenadas, key=lambda x: x[1], reverse=True)
 
     opciones_destacadas = []
-    for opt, prob in opciones_ordenadas[:3]:
+    for opt, prob in todas_ordenadas:
         marca = "⭐" if prob >= UMBRAL_MINIMO_FILTRO else "🔹"
         opciones_destacadas.append(f"{marca} **{opt}**: `{prob}%`")
 
@@ -158,12 +170,11 @@ def simular_monte_carlo(matriz_prob, num_simulaciones=10000, k_altitud=1.0, k_te
     }
 
 def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatura=1.0, k_motivacion=1.0):
-    """Integración de xG, Motivación, Dixon-Coles y Simulaciones de Monte Carlo."""
-    # Aplicar Factor de Motivación y Entorno
+    """Integración jerárquica de xG, Motivación, Dixon-Coles y Monte Carlo."""
     lambda_loc_adj = lambda_loc * k_altitud * k_motivacion
     lambda_vis_adj = lambda_vis * (2.0 - k_altitud)
     
-    matriz_teorica = generar_matriz_probabilidades_teorica(lambda_loc_adj, lambda_vis_adj)
+    matriz_teorica = generar_matriz_dixon_coles(lambda_loc_adj, lambda_vis_adj)
     
     return simular_monte_carlo(
         matriz_teorica, 
@@ -174,7 +185,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     )
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO REAL CON GEMINI-3.8-FLASH Y SEARCH
+# 3. FILTRO CUALITATIVO CON GEMINI-3.8-FLASH Y SEARCH
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
     if not client:
@@ -229,7 +240,7 @@ def obtener_partidos_hoy():
             "recientes_visita": [{"xg": 1.1, "dias_atras": 3}, {"xg": 0.8, "dias_atras": 9}, {"xg": 1.2, "dias_atras": 14}],
             "k_altitud": 1.05,
             "k_temperatura": 1.02,
-            "k_motivacion": 1.03  # Clásico con alto incentivo competitivo
+            "k_motivacion": 1.03
         }
     ]
 
