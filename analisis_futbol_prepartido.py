@@ -23,11 +23,10 @@ NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Esquema Pydantic para forzar respuesta estructurada en Gemini
-class AnalisisPartidokSchema(BaseModel):
-    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local (ej. 0.9 si tiene bajas o 1.1 si viene motivado)")
-    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante")
-    justificacion: str = Field(description="Explicación táctica detallada de 2 a 3 líneas sobre las novedades reales encontradas hoy: bajas, lesionados, sancionados, suplencias o tabla de posiciones.")
+# Esquema Pydantic para la extracción estricta de factores numéricos en fondo
+class AjusteFuerzaSchema(BaseModel):
+    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local tras analizar noticias en vivo")
+    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante tras analizar noticias en vivo")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + xG + MONTE CARLO)
@@ -165,20 +164,19 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
 # ---------------------------------------------------------
 def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
     """
-    Investiga noticias reales de hoy en Google Search en segundo plano,
-    calcula factores de fuerza y genera una justificación real usando Pydantic.
+    Investiga noticias reales de hoy en Google Search en segundo plano para
+    extraer únicamente los coeficientes de fuerza y refinar Monte Carlo.
     """
     lambda_loc_base = 1.40
     lambda_vis_base = 1.10
     factor_loc = 1.0
     factor_vis = 1.0
-    justificacion_real = f"Alineaciones confirmadas y tendencia táctica de la jornada analizada para {equipo_local} vs {equipo_visitante}."
 
     if client:
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         prompt = (
-            f"Investiga en Google Search las noticias, bajas, alineaciones y posición en la tabla para HOY ({fecha_hoy}) del partido: {equipo_local} vs {equipo_visitante} ({liga_nombre}).\n"
-            f"Resume la justificación táctica específicamente en 2 o 3 líneas mencionando las novedades o ausencias encontradas."
+            f"Investiga en Google Search las noticias de HOY ({fecha_hoy}) para el partido: {equipo_local} vs {equipo_visitante} ({liga_nombre}).\n"
+            f"Analiza alineaciones, lesiones, sanciones, rotaciones y momento en la tabla para determinar los factores numéricos de ajuste de fuerza."
         )
         for intento in range(2):
             try:
@@ -189,14 +187,13 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
                     config=types.GenerateContentConfig(
                         tools=[types.Tool(google_search=types.GoogleSearch())],
                         response_mime_type="application/json",
-                        response_schema=AnalisisPartidokSchema,
+                        response_schema=AjusteFuerzaSchema,
                     )
                 )
                 if response.text:
                     data = json.loads(response.text)
                     factor_loc = float(data.get("factor_ajuste_local", 1.0))
                     factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                    justificacion_real = data.get("justificacion", justificacion_real).strip()
                     break
             except Exception as e:
                 time.sleep(4)
@@ -208,8 +205,7 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
         "local": equipo_local,
         "visitante": equipo_visitante,
         "hora_fecha": hora_partido,
-        "stats": stats,
-        "justificacion": justificacion_real
+        "stats": stats
     }
 
 # ---------------------------------------------------------
@@ -248,7 +244,7 @@ def obtener_partidos_hoy():
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. DESPACHO DE REPORTES A TELEGRAM (SIN BOMBILLO REDUNDANTE)
+# 5. DESPACHO DE REPORTES A TELEGRAM (SINTÉTICO Y ULTRALIMPIO)
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -283,7 +279,7 @@ def enviar_reporte_telegram(partidos):
         st = p["stats"]
         destacadas = "\n".join(st["opciones_destacadas"])
 
-        # Formato de reporte sin la frase redundantemente marcada con el bombillo
+        # Ficha ultralimpia: sin bloque de texto redundante ni frases estéticas sobrantes
         mensaje = (
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
@@ -292,9 +288,7 @@ def enviar_reporte_telegram(partidos):
             f"🎯 **OPCIÓN PRINCIPAL DE MAYOR CERTEZA:**\n"
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
             f"📊 **Top 3 Opciones Múltiples (10,000 Simulaciones):**\n"
-            f"{destacadas}\n\n"
-            f"📝 **JUSTIFICACIÓN TÁCTICA (IA):**\n"
-            f"_{p['justificacion']}_"
+            f"{destacadas}"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
 
