@@ -23,8 +23,10 @@ NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Esquema Pydantic para la extracción estricta de factores numéricos en fondo
+# Esquema Pydantic para la extracción estricta de factores numéricos y posiciones en la tabla
 class AjusteFuerzaSchema(BaseModel):
+    posicion_local: str = Field(description="Posición actual del equipo local en la tabla (ej. '8°' o 'N/A')")
+    posicion_visitante: str = Field(description="Posición actual del equipo visitante en la tabla (ej. '12°' o 'N/A')")
     factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local tras analizar noticias en vivo")
     factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante tras analizar noticias en vivo")
 
@@ -164,19 +166,21 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
 # ---------------------------------------------------------
 def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
     """
-    Investiga noticias reales de hoy en Google Search en segundo plano para
-    extraer únicamente los coeficientes de fuerza y refinar Monte Carlo.
+    Investiga noticias reales de hoy y posiciones en la tabla vía Google Search
+    para extraer coeficientes y refrescar la posición de cada equipo.
     """
     lambda_loc_base = 1.40
     lambda_vis_base = 1.10
     factor_loc = 1.0
     factor_vis = 1.0
+    pos_local = ""
+    pos_visita = ""
 
     if client:
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         prompt = (
-            f"Investiga en Google Search las noticias de HOY ({fecha_hoy}) para el partido: {equipo_local} vs {equipo_visitante} ({liga_nombre}).\n"
-            f"Analiza alineaciones, lesiones, sanciones, rotaciones y momento en la tabla para determinar los factores numéricos de ajuste de fuerza."
+            f"Investiga en Google Search la posición actual en la tabla de clasificación de HOY ({fecha_hoy}) para {equipo_local} y {equipo_visitante} en la {liga_nombre}.\n"
+            f"Analiza alineaciones, lesiones, sanciones, rotaciones y momento deportivo para determinar los factores numéricos de ajuste de fuerza."
         )
         for intento in range(2):
             try:
@@ -194,6 +198,13 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
                     data = json.loads(response.text)
                     factor_loc = float(data.get("factor_ajuste_local", 1.0))
                     factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
+                    pos_loc_str = str(data.get("posicion_local", "")).strip()
+                    pos_vis_str = str(data.get("posicion_visitante", "")).strip()
+                    
+                    if pos_loc_str and pos_loc_str.upper() != "N/A":
+                        pos_local = f" ({pos_loc_str})"
+                    if pos_vis_str and pos_vis_str.upper() != "N/A":
+                        pos_visita = f" ({pos_vis_str})"
                     break
             except Exception as e:
                 time.sleep(4)
@@ -202,8 +213,8 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
     stats = evaluar_partido_completo(lambda_loc_base * factor_loc, lambda_vis_base * factor_vis)
     return {
         "liga": liga_nombre,
-        "local": equipo_local,
-        "visitante": equipo_visitante,
+        "local": f"{equipo_local}{pos_local}",
+        "visitante": f"{equipo_visitante}{pos_visita}",
         "hora_fecha": hora_partido,
         "stats": stats
     }
@@ -244,7 +255,7 @@ def obtener_partidos_hoy():
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. DESPACHO DE REPORTES A TELEGRAM (SINTÉTICO Y ULTRALIMPIO)
+# 5. DESPACHO DE REPORTES A TELEGRAM (CON POSICIONES EN TABLA)
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -279,7 +290,7 @@ def enviar_reporte_telegram(partidos):
         st = p["stats"]
         destacadas = "\n".join(st["opciones_destacadas"])
 
-        # Ficha ultralimpia: sin bloque de texto redundante ni frases estéticas sobrantes
+        # Ficha con posición de la tabla integrada junto a cada equipo (ej. Boyacá Chicó (18°) vs Deportivo Pasto (7°))
         mensaje = (
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
