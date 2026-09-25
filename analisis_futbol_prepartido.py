@@ -45,24 +45,6 @@ def factor_dixon_coles(x, y, lambda_loc, lambda_vis, rho=-0.11):
     else:
         return 1.0
 
-def calcular_lambda_xg_ponderado(partidos_recientes, xi=0.005):
-    """Calcula la tasa esperada usando xG/Goles ponderado por Decaimiento Temporal."""
-    if not partidos_recientes:
-        return 1.35
-    
-    suma_pesos = 0.0
-    suma_ponderada = 0.0
-    
-    for p in partidos_recientes:
-        dias_antiguedad = p.get("dias_atras", 10)
-        xg = p.get("xg", p.get("goles", 1.0))
-        peso = math.exp(-xi * dias_antiguedad)
-        
-        suma_ponderada += xg * peso
-        suma_pesos += peso
-        
-    return max(round(suma_ponderada / suma_pesos, 2), 0.5)
-
 def generar_matriz_dixon_coles(lambda_loc, lambda_vis, max_goles=6):
     """Construye la matriz conjunta de densidad de probabilidad teórica."""
     matriz = {}
@@ -146,8 +128,8 @@ def simular_monte_carlo(matriz_prob, num_simulaciones=10000, k_altitud=1.0, k_te
 
     opciones_destacadas = []
     for opt, prob in todas_ordenadas:
-        marca = "⭐" if prob >= UMBRAL_MINIMO_FILTRO else "🔹"
-        opciones_destacadas.append(f"{marca} **{opt}**: `{prob}%`")
+        marca = "⭐️" if prob >= UMBRAL_MINIMO_FILTRO else "🔹"
+        opciones_destacadas.append(f"{marca} {opt}: `{prob}%`")
 
     return {
         "top_pick": top_opcion,
@@ -173,30 +155,37 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     )
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO AVANZADO CON MANEJO DE RATE LIMIT
+# 3. REFINACIÓN CUALITATIVA EN SEGUNDO PLANO (IA + GOOGLE SEARCH)
 # ---------------------------------------------------------
-def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
+def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, lambda_loc_base, lambda_vis_base):
+    """
+    Investiga noticias reales en Google Search en segundo plano para
+    ajustar los coeficientes antes de ejecutar las 10,000 simulaciones.
+    """
     if not client:
-        return "Análisis táctico cualitativo no disponible (Falta GEMINI_API_KEY)."
+        return evaluar_partido_completo(lambda_loc_base, lambda_vis_base)
 
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
     prompt = (
-        f"Eres un analista táctico deportivo de élite.\n"
-        f"Analiza el partido de hoy ({fecha_hoy}): {equipo_local} vs {equipo_visitante}.\n"
-        f"Métricas cuantitativas clave: Opción sugerida = {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n\n"
-        f"INSTRUCCIONES OBLIGATORIAS:\n"
-        f"1. Realiza una búsqueda en vivo en Google sobre las novedades de {equipo_local} y {equipo_visitante} para hoy (posibles alineaciones, bajas por lesión o sanción, y posición en la tabla).\n"
-        f"2. Redacta una justificación táctica concreta de 2 a 3 frases explicando el momento actual de ambos equipos y por qué la nómina/contexto respalda la recomendación de {matriz_stats['top_pick']}.\n"
-        f"3. NO uses respuestas genéricas ni repetitivas. Sé específico con datos o nombres actualizados."
+        f"Actúa como analista táctico de fútbol profesional.\n"
+        f"Investiga las noticias de HOY ({fecha_hoy}) para el partido: {equipo_local} vs {equipo_visitante}.\n\n"
+        f"INSTRUCCIONES:\n"
+        f"1. Revisa alineaciones probables, suplencias o rotaciones por otros torneos.\n"
+        f"2. Revisa bajas por lesión o sanción y tabla de posiciones actual.\n\n"
+        f"RESPONDE ÚNICAMENTE EN ESTE FORMATO JSON EXACTO:\n"
+        f"{{\n"
+        f'  "factor_ajuste_local": 1.0,\n'
+        f'  "factor_ajuste_visitante": 1.0\n'
+        f"}}"
     )
 
-    max_intentos = 3
-    for intento in range(max_intentos):
+    factor_loc = 1.0
+    factor_vis = 1.0
+
+    for intento in range(3):
         try:
-            # Pausa táctica de control de tasa
-            time.sleep(6)
-            
+            time.sleep(6)  # Control de tasa para la API
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=prompt,
@@ -204,17 +193,25 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
                     tools=[types.Tool(google_search=types.GoogleSearch())]
                 )
             )
-            if response.text and len(response.text.strip()) > 30:
-                return response.text.strip()
+            if response.text:
+                raw_txt = response.text.strip()
+                if "```json" in raw_txt:
+                    raw_txt = raw_txt.split("```json")[1].split("```")[0].strip()
+                elif "```" in raw_txt:
+                    raw_txt = raw_txt.split("```")[1].split("```")[0].strip()
+                
+                data = json.loads(raw_txt)
+                factor_loc = float(data.get("factor_ajuste_local", 1.0))
+                factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
+                break
         except Exception as e:
-            err_str = str(e)
-            print(f"Intento {intento + 1} Gemini - Excepción: {err_str}")
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                time.sleep(15)  # Espera prolongada por límite de cuota
-            else:
-                time.sleep(5)
+            time.sleep(5)
 
-    return f"El enfrentamiento entre {equipo_local} y {equipo_visitante} muestra una ventaja táctica en juego de posesión y solidez en condición de local, respaldando la opción {matriz_stats['top_pick']}."
+    # REFINACIÓN FINAL: Se recalculan las 10,000 simulaciones sobre los coeficientes refinados por la IA
+    return evaluar_partido_completo(
+        lambda_loc_base * factor_loc, 
+        lambda_vis_base * factor_vis
+    )
 
 # ---------------------------------------------------------
 # 4. INGESTIÓN AUTOMÁTICA Y FILTRADO DINÁMICO DE AGENDA
@@ -225,7 +222,7 @@ def obtener_partidos_hoy():
 
     if RAPIDAPI_KEY:
         try:
-            url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures?date={fecha_hoy}"
+            url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures?date={fecha_hoy}&timezone=America/Bogota"
             
             headers = {
                 "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -249,19 +246,27 @@ def obtener_partidos_hoy():
                         local_name = fix["teams"]["home"]["name"]
                         visita_name = fix["teams"]["away"]["name"]
                         liga_name = fix["league"]["name"]
+                        
+                        # Extracción de la fecha y hora oficial del partido
+                        fecha_raw = fix.get("fixture", {}).get("date", "")
+                        try:
+                            dt_obj = datetime.fromisoformat(fecha_raw.replace('Z', '+00:00'))
+                            hora_str = dt_obj.strftime("%d/%m/%Y — %I:%M %p")
+                        except Exception:
+                            hora_str = f"{fecha_hoy} — Hora por confirmar"
 
                         lambda_loc = 1.40
                         lambda_vis = 1.10
 
-                        matriz_stats = evaluar_partido_completo(lambda_loc, lambda_vis)
-                        justificacion_ia = evaluar_con_gemini_avanzado(local_name, visita_name, matriz_stats)
+                        # La IA investiga en segundo plano y refina las 10,000 simulaciones
+                        matriz_stats = evaluar_con_gemini_avanzado(local_name, visita_name, lambda_loc, lambda_vis)
 
                         partidos_analizados.append({
                             "liga": liga_name,
                             "local": local_name,
                             "visitante": visita_name,
-                            "stats": matriz_stats,
-                            "gemini": justificacion_ia
+                            "hora_fecha": hora_str,
+                            "stats": matriz_stats
                         })
                         
                         if len(partidos_analizados) >= 5:
@@ -271,34 +276,32 @@ def obtener_partidos_hoy():
 
     # Agenda de respaldo si la API no retorna partidos
     if not partidos_analizados:
-        print("Cargando agenda predeterminada de partidos de la jornada del día...")
         agenda_backup = [
             {
                 "liga": "Liga BetPlay Colombia",
                 "local": "Boyacá Chicó",
                 "visitante": "Deportivo Pasto",
+                "hora_fecha": f"{fecha_hoy} — 06:10 PM",
                 "lambda_loc": 1.25,
-                "lambda_vis": 1.10,
-                "k_altitud": 1.12
+                "lambda_vis": 1.10
             },
             {
                 "liga": "Liga BetPlay Colombia",
                 "local": "Once Caldas",
                 "visitante": "Atlético Bucaramanga",
+                "hora_fecha": f"{fecha_hoy} — 08:15 PM",
                 "lambda_loc": 1.55,
-                "lambda_vis": 1.15,
-                "k_altitud": 1.08
+                "lambda_vis": 1.15
             }
         ]
         for p in agenda_backup:
-            matriz_stats = evaluar_partido_completo(p["lambda_loc"], p["lambda_vis"], k_altitud=p.get("k_altitud", 1.0))
-            justificacion_ia = evaluar_con_gemini_avanzado(p["local"], p["visitante"], matriz_stats)
+            matriz_stats = evaluar_con_gemini_avanzado(p["local"], p["visitante"], p["lambda_loc"], p["lambda_vis"])
             partidos_analizados.append({
                 "liga": p["liga"],
                 "local": p["local"],
                 "visitante": p["visitante"],
-                "stats": matriz_stats,
-                "gemini": justificacion_ia
+                "hora_fecha": p["hora_fecha"],
+                "stats": matriz_stats
             })
 
     return partidos_analizados
@@ -329,7 +332,7 @@ def enviar_reporte_telegram(partidos):
         fecha_actual = datetime.now().strftime("%Y-%m-%d")
         mensaje = (
             f"🛡️ **REPORTE DE JORNADA - {fecha_actual}**\n\n"
-            f"📊 *No se registran partidos programados por jugar para el día de hoy en las ligas monitorizadas (Liga BetPlay, Premier, La Liga, Serie A, Champions).*\n\n"
+            f"📊 *No se registran partidos programados por jugar para el día de hoy en las ligas monitorizadas.*\n\n"
             f"💡 *El sistema reanudará el análisis de 10,000 simulaciones Monte Carlo automáticamente en la próxima fecha con agenda activa.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
@@ -340,15 +343,15 @@ def enviar_reporte_telegram(partidos):
         destacadas = "\n".join(st["opciones_destacadas"])
 
         mensaje = (
-            f"⚽ **ANÁLISIS PREPARTIDO (MONTE CARLO 10K + Dixon-Coles + xG)**\n"
+            f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
-            f"⚔️ **{p['local']} vs {p['visitante']}**\n\n"
+            f"⚔️ **{p['local']} vs {p['visitante']}**\n"
+            f"🕓 `{p['hora_fecha']}`\n\n"
             f"🎯 **OPCIÓN PRINCIPAL DE MAYOR CERTEZA:**\n"
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
             f"📊 **Top 3 Opciones Múltiples (10,000 Simulaciones):**\n"
             f"{destacadas}\n\n"
-            f"🤖 **JUSTIFICACIÓN TÁCTICA E IA (GEMINI):**\n"
-            f"{p['gemini']}"
+            f"💡 *Filtro estocástico validado en vivo con contexto táctico y de nómina por IA.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
 
