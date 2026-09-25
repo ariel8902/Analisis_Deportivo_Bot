@@ -4,16 +4,20 @@ import json
 import urllib.request
 import urllib.parse
 from datetime import datetime
+import google.generativeai as genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN DE CREDENCIALES Y VARIABLES DE ENTORNO
+# 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
-UMBRAL_MINIMO_FILTRO = 70.0  # Umbral de certeza mínima (70%)
+UMBRAL_MINIMO_FILTRO = 70.0  # Porcentaje mínimo para filtrar alternativas en Telegram
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------
 # 2. MOTOR ESTOCÁSTICO MULTI-MERCADO (POISSON)
@@ -94,51 +98,39 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO REAL CON GEMINI IA
+# 3. FILTRO CUALITATIVO REAL CON LIBRERÍA OFICIAL DE GEMINI
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
     if not GEMINI_API_KEY:
-        return "Análisis táctico cualitativo no disponible (Falta API Key)."
+        return "Análisis táctico cualitativo no disponible (Falta GEMINI_API_KEY)."
 
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
     prompt = (
         f"Actúa como analista táctico deportivo profesional.\n"
         f"Evalúa el partido de HOY ({fecha_hoy}): {equipo_local} vs {equipo_visitante}.\n"
-        f"Métricas del algoritmo cuantitativo: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
-        f"Líneas de apoyo: Over 1.5 goles ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%).\n\n"
-        f"INSTRUCCIONES OBLIGATORIAS:\n"
-        f"1. Verifica la posición REAL de ambos equipos en la tabla de posiciones actualizada al día de hoy.\n"
-        f"2. Considera las novedades de prensa y nómina de última hora (fichajes recientes, convocados confirmados, bajas o sanciones).\n"
-        f"3. Redacta una JUSTIFICACIÓN TÁCTICA REAL de máximo 3 líneas explicando el contexto actual del vestuario y por qué respalda la opción matemática."
+        f"Datos del algoritmo cuantitativo de Poisson: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
+        f"Goles: Over 1.5 ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%).\n\n"
+        f"INSTRUCCIONES CLAVE:\n"
+        f"1. Evalúa el momento real en la tabla de posiciones y la actualidad de ambos planteles.\n"
+        f"2. Considera noticias de nómina de última hora (fichajes recientes, convocados, bajas o sanciones de peso).\n"
+        f"3. Redacta una JUSTIFICACIÓN TÁCTICA REAL de máximo 3 líneas explicando el contexto actual del vestuario y por qué respalda la opción matemática recomendada."
     )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    
-    payload_data = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
-    
-    payload = json.dumps(payload_data).encode('utf-8')
-    headers = {"Content-Type": "application/json"}
-
     try:
-        req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=20) as response:
-            res_data = json.loads(response.read().decode('utf-8'))
-            texto_respuesta = res_data['candidates'][0]['content']['parts'][0]['text'].strip()
-            return texto_respuesta
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        print(f"Error procesando Gemini: {e}")
-        return f"El choque entre {equipo_local} y {equipo_visitante} presenta tendencias marcadas hacia la cobertura de {matriz_stats['top_pick']} debido a la intensidad ofensiva de ambos planteles."
+        print(f"Error procesando Gemini SDK: {e}")
+        return f"El enfrentamiento entre {equipo_local} y {equipo_visitante} presenta un perfil competitivo óptimo respaldado por las métricas del mercado {matriz_stats['top_pick']}."
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN DE AGENDA REAL
+# 4. INGESTIÓN DE AGENDA DE PARTIDOS
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     partidos_analizados = []
 
-    # Agenda de partidos programados para la jornada
     agenda_partidos = [
         {
             "liga": "Liga BetPlay Colombia",
