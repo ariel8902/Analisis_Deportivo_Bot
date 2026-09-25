@@ -100,7 +100,7 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO CON MANEJO DE RETRY (429 RATE LIMIT)
+# 3. FILTRO CUALITATIVO CON MODELO GEMINI-3.8-FLASH Y GOOGLE SEARCH
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
     if not client:
@@ -119,12 +119,11 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
         f"3. Redacta una JUSTIFICACIÓN TÁCTICA REAL de máximo 3 líneas explicando por qué la nómina y el contexto respaldan la opción matemática."
     )
 
-    # Reintentos automáticos para evitar fallos por cuota (HTTP 429)
     max_intentos = 3
     for intento in range(max_intentos):
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.8-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())]
@@ -135,7 +134,7 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
             err_str = str(e)
             print(f"Intento {intento + 1} de {max_intentos} - Error Gemini SDK: {err_str}")
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                time.sleep(12)  # Pausa estratégica para liberar la cuota por minuto
+                time.sleep(12)
             else:
                 time.sleep(3)
 
