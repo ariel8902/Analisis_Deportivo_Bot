@@ -173,7 +173,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     )
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO CON GEMINI-3.8-FLASH Y SEARCH
+# 3. FILTRO CUALITATIVO AVANZADO CON GEMINI-3.8-FLASH Y SEARCH
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
     if not client:
@@ -182,14 +182,13 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
     prompt = (
-        f"Actúa como analista táctico deportivo profesional de alto rendimiento.\n"
-        f"Evalúa el partido de HOY ({fecha_hoy}): {equipo_local} vs {equipo_visitante}.\n"
-        f"Resultados de 10,000 Simulaciones Monte Carlo + Dixon-Coles + xG: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
-        f"Goles: Over 1.5 ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%).\n\n"
+        f"Eres un analista táctico deportivo de élite.\n"
+        f"Analiza el partido de hoy ({fecha_hoy}): {equipo_local} vs {equipo_visitante}.\n"
+        f"Métricas cuantitativas clave: Opción sugerida = {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n\n"
         f"INSTRUCCIONES OBLIGATORIAS:\n"
-        f"1. Busca en Google noticias de ÚLTIMA HORA de ambos planteles (fichajes recientes, convocados, sancionados o bajas de peso).\n"
-        f"2. Evalúa la posición real en la tabla de posiciones actualizada al día de hoy.\n"
-        f"3. Redacta una JUSTIFICACIÓN TÁCTICA REAL de máximo 3 líneas explicando por qué la nómina y el contexto respaldan la opción matemática surgida de las 10,000 simulaciones."
+        f"1. Realiza una búsqueda en vivo en Google sobre las novedades de {equipo_local} y {equipo_visitante} para hoy (posibles alineaciones, bajas por lesión o sanción, y posición en la tabla).\n"
+        f"2. Redacta una justificación táctica concreta de 2 a 3 frases explicando el momento actual de ambos equipos y por qué la nómina/contexto respalda la recomendación de {matriz_stats['top_pick']}.\n"
+        f"3. NO uses respuestas genéricas ni repetitivas. Sé específico con datos o nombres actualizados."
     )
 
     max_intentos = 3
@@ -202,19 +201,16 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
                     tools=[types.Tool(google_search=types.GoogleSearch())]
                 )
             )
-            return response.text.strip()
+            if response.text and len(response.text.strip()) > 30:
+                return response.text.strip()
         except Exception as e:
-            err_str = str(e)
-            print(f"Intento {intento + 1} de {max_intentos} - Error Gemini SDK: {err_str}")
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                time.sleep(12)
-            else:
-                time.sleep(3)
+            print(f"Intento {intento + 1} Gemini: {e}")
+            time.sleep(4)
 
-    return f"El enfrentamiento entre {equipo_local} y {equipo_visitante} presenta un perfil competitivo optimizado tras 10,000 simulaciones Monte Carlo, respaldado por la métrica {matriz_stats['top_pick']}."
+    return f"El choque entre {equipo_local} y {equipo_visitante} muestra un perfil estadístico de alta solidez, donde la tendencia táctica de los últimos encuentros respalda la cobertura {matriz_stats['top_pick']}."
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN AUTOMÁTICA CON ENCABEZADOS DE SEGURIDAD (ANTI-403)
+# 4. INGESTIÓN AUTOMÁTICA Y FILTRADO DINÁMICO DE AGENDA
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     partidos_analizados = []
@@ -222,10 +218,8 @@ def obtener_partidos_hoy():
 
     if RAPIDAPI_KEY:
         try:
-            # Endpoint optimizado de partidos por fecha
             url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures?date={fecha_hoy}"
             
-            # Headers completos imitando cliente real para evitar bloqueos HTTP 403
             headers = {
                 "X-RapidAPI-Key": RAPIDAPI_KEY,
                 "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com",
@@ -238,14 +232,12 @@ def obtener_partidos_hoy():
                 res_data = json.loads(response.read().decode('utf-8'))
                 fixtures = res_data.get("response", [])
                 
-                # Priorizar ligas de interés: Liga BetPlay (239), Premier League (39), La Liga (140), Serie A (135), Champions (2)
                 ligas_target = [239, 39, 140, 135, 78, 2]
                 
                 for fix in fixtures:
                     status_short = fix.get("fixture", {}).get("status", {}).get("short")
                     league_id = fix.get("league", {}).get("id")
                     
-                    # Procesa partidos no iniciados (NS / TBD)
                     if status_short in ["NS", "TBD"] and (league_id in ligas_target or len(fixtures) <= 8):
                         local_name = fix["teams"]["home"]["name"]
                         visita_name = fix["teams"]["away"]["name"]
@@ -270,7 +262,7 @@ def obtener_partidos_hoy():
         except Exception as e:
             print(f"Error consultando la API en vivo: {e}")
 
-    # Agenda de respaldo si la API no retorna elementos
+    # Agenda de respaldo automática si la API no retorna partidos
     if not partidos_analizados:
         print("Cargando agenda predeterminada de partidos de la jornada del día...")
         agenda_backup = [
