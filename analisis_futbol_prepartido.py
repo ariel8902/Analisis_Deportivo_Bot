@@ -23,10 +23,10 @@ NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Esquema Pydantic para la extracción estricta de factores numéricos y posiciones
+# Esquema Pydantic para la extracción estricta de factores numéricos y posiciones reales
 class AnalisisPartidoDinamicoSchema(BaseModel):
-    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '17°' o 'Puesto 17'")
-    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '15°' o 'Puesto 15'")
+    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '17°' o '17° (8 pts)'")
+    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '15°' o '15° (8 pts)'")
     factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local tras analizar noticias en vivo (1.0 neutro)")
     factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante tras analizar noticias en vivo (1.0 neutro)")
 
@@ -162,11 +162,12 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     )
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN DINÁMICA DE POSICIONES Y FUERZA CON GOOGLE SEARCH
+# 3. EXTRACCIÓN DINÁMICA CON CONTROL DE CUOTA (ANTI-RATE LIMIT)
 # ---------------------------------------------------------
-def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre, pos_fallback_loc="En tabla", pos_fallback_vis="En tabla"):
+def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre, pos_fallback_loc="En competencia", pos_fallback_vis="En competencia"):
     """
-    Investiga en Google Search en tiempo real la tabla de posiciones y las noticias.
+    Investiga en Google Search en tiempo real la tabla oficial y noticias de hoy.
+    Aplica pausas estratégicas de 8 segundos para soportar alta demanda de fin de semana/Champions.
     """
     lambda_loc_base = 1.40
     lambda_vis_base = 1.10
@@ -178,13 +179,13 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
     if client:
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         prompt = (
-            f"Busca en Google Search la tabla de posiciones oficial más reciente de {liga_nombre} para hoy {fecha_hoy}.\n"
-            f"Identifica en qué puesto exacto está {equipo_local} (posicion_exacta_local) y en qué puesto está {equipo_visitante} (posicion_exacta_visitante).\n"
-            f"Ejemplo de respuesta esperada: '17°' o '10°'."
+            f"Busca en Google Search la tabla de posiciones oficial más reciente de {liga_nombre} para la jornada de hoy {fecha_hoy}.\n"
+            f"Extrae el puesto exacto en la tabla para {equipo_local} (posicion_exacta_local) y para {equipo_visitante} (posicion_exacta_visitante).\n"
+            f"Identifica lesionados, sancionados o rotaciones confirmadas para hoy para determinar los factores numéricos de ajuste de fuerza."
         )
         for intento in range(2):
             try:
-                time.sleep(6)  # Control de tasa
+                time.sleep(8)  # Pausa optimizada para evitar colapsos por tasa en días de alta demanda
                 response = client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=prompt,
@@ -208,9 +209,9 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
                         pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
                     break
             except Exception as e:
-                time.sleep(4)
+                time.sleep(5)
 
-    # REFINACIÓN FINAL DE MONTE CARLO (10,000 iteraciones)
+    # REFINACIÓN FINAL DE MONTE CARLO (10,000 iteraciones jerárquicas)
     stats = evaluar_partido_completo(lambda_loc_base * factor_loc, lambda_vis_base * factor_vis)
     return {
         "liga": liga_nombre,
@@ -229,7 +230,7 @@ def obtener_partidos_hoy():
     partidos_analizados = []
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
-    # Agenda de la jornada diaria
+    # Agenda base dinámica (Soporta múltiples ligas y jornadas de Champions/Fin de semana)
     agenda_jornada = [
         {
             "liga": "Liga BetPlay Colombia",
@@ -249,7 +250,7 @@ def obtener_partidos_hoy():
         }
     ]
 
-    print("Iniciando refinación táctica con Monte Carlo e Búsqueda Dinámica de la Tabla...")
+    print("Iniciando refinación táctica con Monte Carlo e Ingestión Dinámica de la Tabla...")
     for item in agenda_jornada:
         partido_refinado = analizar_y_refinar_partido_ia(
             item["local"], 
@@ -264,7 +265,7 @@ def obtener_partidos_hoy():
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. DESPACHO DE REPORTES A TELEGRAM (CON POSICIÓN OBLIGATORIA)
+# 5. DESPACHO DE REPORTES A TELEGRAM (MENSAJES INDIVIDUALES LIMPIOS)
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -299,7 +300,7 @@ def enviar_reporte_telegram(partidos):
         st = p["stats"]
         destacadas = "\n".join(st["opciones_destacadas"])
 
-        # Mensaje final formateado garantizando SIEMPRE la línea de posición
+        # Ficha ultralimpia individual por partido
         mensaje = (
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
@@ -312,6 +313,7 @@ def enviar_reporte_telegram(partidos):
             f"{destacadas}"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
+        time.sleep(2)  # Pausa de 2 segundos entre mensajes a Telegram para evitar bloqueos del Bot API
 
 # ---------------------------------------------------------
 # EJECUCIÓN PRINCIPAL
