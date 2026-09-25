@@ -4,7 +4,8 @@ import json
 import urllib.request
 import urllib.parse
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # ---------------------------------------------------------
 # 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
@@ -16,8 +17,8 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0  # Porcentaje mínimo para filtrar alternativas en Telegram
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# Inicialización del cliente moderno de Google Gemini
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ---------------------------------------------------------
 # 2. MOTOR ESTOCÁSTICO MULTI-MERCADO (POISSON)
@@ -98,10 +99,10 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO REAL CON LIBRERÍA OFICIAL DE GEMINI
+# 3. FILTRO CUALITATIVO CON SDK OFICIAL (GOOGLE-GENAI) Y GOOGLE SEARCH
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
-    if not GEMINI_API_KEY:
+    if not client:
         return "Análisis táctico cualitativo no disponible (Falta GEMINI_API_KEY)."
 
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
@@ -109,17 +110,22 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
     prompt = (
         f"Actúa como analista táctico deportivo profesional.\n"
         f"Evalúa el partido de HOY ({fecha_hoy}): {equipo_local} vs {equipo_visitante}.\n"
-        f"Datos del algoritmo cuantitativo de Poisson: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
+        f"Datos del algoritmo de Poisson: Opción recomendada: {matriz_stats['top_pick']} ({matriz_stats['top_prob']}%).\n"
         f"Goles: Over 1.5 ({matriz_stats['over_1_5']}%), BTTS SÍ ({matriz_stats['btts_si']}%).\n\n"
-        f"INSTRUCCIONES CLAVE:\n"
-        f"1. Evalúa el momento real en la tabla de posiciones y la actualidad de ambos planteles.\n"
-        f"2. Considera noticias de nómina de última hora (fichajes recientes, convocados, bajas o sanciones de peso).\n"
-        f"3. Redacta una JUSTIFICACIÓN TÁCTICA REAL de máximo 3 líneas explicando el contexto actual del vestuario y por qué respalda la opción matemática recomendada."
+        f"INSTRUCCIONES OBLIGATORIAS:\n"
+        f"1. Busca en Google noticias de ÚLTIMA HORA de ambos planteles (fichajes recientes, convocados, sancionados o bajas de peso).\n"
+        f"2. Evalúa la posición real en la tabla de posiciones actualizada al día de hoy.\n"
+        f"3. Redacta una JUSTIFICACIÓN TÁCTICA REAL de máximo 3 líneas explicando por qué la nómina y el contexto respaldan la opción matemática."
     )
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]
+            )
+        )
         return response.text.strip()
     except Exception as e:
         print(f"Error procesando Gemini SDK: {e}")
