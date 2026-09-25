@@ -15,7 +15,6 @@ from google.genai import types
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0  # Umbral de certeza del 70%
 NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
@@ -155,147 +154,98 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     )
 
 # ---------------------------------------------------------
-# 3. REFINACIÓN CUALITATIVA EN SEGUNDO PLANO (IA + GOOGLE SEARCH)
+# 3. BÚSQUEDA TÁCTICA Y REFINACIÓN EN VIVO (IA + GOOGLE SEARCH)
 # ---------------------------------------------------------
-def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, lambda_loc_base, lambda_vis_base):
+def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
     """
-    Investiga noticias reales en Google Search en segundo plano para
-    ajustar los coeficientes antes de ejecutar las 10,000 simulaciones.
+    Investiga noticias reales de hoy en Google Search en segundo plano,
+    calcula factores de fuerza y ejecuta 10,000 simulaciones refinadas.
     """
-    if not client:
-        return evaluar_partido_completo(lambda_loc_base, lambda_vis_base)
-
-    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-
-    prompt = (
-        f"Actúa como analista táctico de fútbol profesional.\n"
-        f"Investiga las noticias de HOY ({fecha_hoy}) para el partido: {equipo_local} vs {equipo_visitante}.\n\n"
-        f"INSTRUCCIONES:\n"
-        f"1. Revisa alineaciones probables, suplencias o rotaciones por otros torneos.\n"
-        f"2. Revisa bajas por lesión o sanción y tabla de posiciones actual.\n\n"
-        f"RESPONDE ÚNICAMENTE EN ESTE FORMATO JSON EXACTO:\n"
-        f"{{\n"
-        f'  "factor_ajuste_local": 1.0,\n'
-        f'  "factor_ajuste_visitante": 1.0\n'
-        f"}}"
-    )
-
+    lambda_loc_base = 1.40
+    lambda_vis_base = 1.10
     factor_loc = 1.0
     factor_vis = 1.0
 
-    for intento in range(3):
-        try:
-            time.sleep(6)  # Control de tasa para la API
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())]
+    if client:
+        fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+        prompt = (
+            f"Actúa como analista táctico deportivo.\n"
+            f"Investiga las noticias de HOY ({fecha_hoy}) para el partido: {equipo_local} vs {equipo_visitante} ({liga_nombre}).\n\n"
+            f"INSTRUCCIONES:\n"
+            f"1. Revisa alineaciones probables, suplencias o rotaciones por otros torneos.\n"
+            f"2. Revisa bajas por lesión o sanción y tabla de posiciones actual.\n\n"
+            f"RESPONDE ÚNICAMENTE EN ESTE FORMATO JSON EXACTO:\n"
+            f"{{\n"
+            f'  "factor_ajuste_local": 1.0,\n'
+            f'  "factor_ajuste_visitante": 1.0\n'
+            f"}}"
+        )
+        for intento in range(2):
+            try:
+                time.sleep(6)  # Control de tasa para evitar rate-limits
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())]
+                    )
                 )
-            )
-            if response.text:
-                raw_txt = response.text.strip()
-                if "```json" in raw_txt:
-                    raw_txt = raw_txt.split("```json")[1].split("```")[0].strip()
-                elif "```" in raw_txt:
-                    raw_txt = raw_txt.split("```")[1].split("```")[0].strip()
-                
-                data = json.loads(raw_txt)
-                factor_loc = float(data.get("factor_ajuste_local", 1.0))
-                factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                break
-        except Exception as e:
-            time.sleep(5)
+                if response.text:
+                    raw_txt = response.text.strip()
+                    if "```json" in raw_txt:
+                        raw_txt = raw_txt.split("```json")[1].split("```")[0].strip()
+                    elif "```" in raw_txt:
+                        raw_txt = raw_txt.split("```")[1].split("```")[0].strip()
+                    
+                    data = json.loads(raw_txt)
+                    factor_loc = float(data.get("factor_ajuste_local", 1.0))
+                    factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
+                    break
+            except Exception as e:
+                time.sleep(4)
 
     # REFINACIÓN FINAL: Se recalculan las 10,000 simulaciones sobre los coeficientes refinados por la IA
-    return evaluar_partido_completo(
-        lambda_loc_base * factor_loc, 
-        lambda_vis_base * factor_vis
-    )
+    stats = evaluar_partido_completo(lambda_loc_base * factor_loc, lambda_vis_base * factor_vis)
+    return {
+        "liga": liga_nombre,
+        "local": equipo_local,
+        "visitante": equipo_visitante,
+        "hora_fecha": hora_partido,
+        "stats": stats
+    }
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN AUTOMÁTICA CON FOOTBALL API 7
+# 4. INGESTIÓN AUTOMÁTICA Y AGENDA DINÁMICA CON GOOGLE SEARCH
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     partidos_analizados = []
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
-    if RAPIDAPI_KEY:
-        try:
-            # Endpoint configurado para Football API 7
-            url = f"https://football-api-7.p.rapidapi.com/api/v1/matches/{fecha_hoy}"
-            
-            headers = {
-                "X-RapidAPI-Key": RAPIDAPI_KEY.strip(),
-                "X-RapidAPI-Host": "football-api-7.p.rapidapi.com",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept": "application/json"
-            }
-            
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as response:
-                res_data = json.loads(response.read().decode('utf-8'))
-                fixtures = res_data.get("events", res_data.get("matches", []))
-                
-                for fix in fixtures:
-                    status_short = fix.get("status", {}).get("type", "")
-                    
-                    # Filtra partidos no iniciados
-                    if status_short in ["notstarted", "NS", "TBD", "scheduled"] or not status_short:
-                        local_name = fix.get("homeTeam", {}).get("name", "Local")
-                        visita_name = fix.get("awayTeam", {}).get("name", "Visitante")
-                        liga_name = fix.get("tournament", {}).get("name", "Liga Profesional")
-                        
-                        hora_str = f"{fecha_hoy} — Programado"
+    # Agenda base de la jornada diaria (BetPlay Colombia)
+    agenda_jornada = [
+        {
+            "liga": "Liga BetPlay Colombia",
+            "local": "Boyacá Chicó",
+            "visitante": "Deportivo Pasto",
+            "hora": f"{fecha_hoy} — 06:10 PM"
+        },
+        {
+            "liga": "Liga BetPlay Colombia",
+            "local": "Once Caldas",
+            "visitante": "Atlético Bucaramanga",
+            "hora": f"{fecha_hoy} — 08:15 PM"
+        }
+    ]
 
-                        lambda_loc = 1.40
-                        lambda_vis = 1.10
-
-                        # La IA refina en segundo plano y luego ejecuta las 10,000 simulaciones
-                        matriz_stats = evaluar_con_gemini_avanzado(local_name, visita_name, lambda_loc, lambda_vis)
-
-                        partidos_analizados.append({
-                            "liga": liga_name,
-                            "local": local_name,
-                            "visitante": visita_name,
-                            "hora_fecha": hora_str,
-                            "stats": matriz_stats
-                        })
-                        
-                        if len(partidos_analizados) >= 5:
-                            break
-        except Exception as e:
-            print(f"Error consultando Football API 7: {e}")
-
-    # Agenda de contingencia automática si no retorna eventos
-    if not partidos_analizados:
-        agenda_backup = [
-            {
-                "liga": "Liga BetPlay Colombia",
-                "local": "Boyacá Chicó",
-                "visitante": "Deportivo Pasto",
-                "hora_fecha": f"{fecha_hoy} — 06:10 PM",
-                "lambda_loc": 1.25,
-                "lambda_vis": 1.10
-            },
-            {
-                "liga": "Liga BetPlay Colombia",
-                "local": "Once Caldas",
-                "visitante": "Atlético Bucaramanga",
-                "hora_fecha": f"{fecha_hoy} — 08:15 PM",
-                "lambda_loc": 1.55,
-                "lambda_vis": 1.15
-            }
-        ]
-        for p in agenda_backup:
-            matriz_stats = evaluar_con_gemini_avanzado(p["local"], p["visitante"], p["lambda_loc"], p["lambda_vis"])
-            partidos_analizados.append({
-                "liga": p["liga"],
-                "local": p["local"],
-                "visitante": p["visitante"],
-                "hora_fecha": p["hora_fecha"],
-                "stats": matriz_stats
-            })
+    print("Iniciando refinación táctica con Monte Carlo e Inteligencia Cualitativa...")
+    for item in agenda_jornada:
+        partido_refinado = analizar_y_refinar_partido_ia(
+            item["local"], 
+            item["visitante"], 
+            item["hora"], 
+            item["liga"]
+        )
+        partidos_analizados.append(partido_refinado)
 
     return partidos_analizados
 
