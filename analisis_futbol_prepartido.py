@@ -214,7 +214,7 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, lambda_loc_base,
     )
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN AUTOMÁTICA Y FILTRADO DINÁMICO DE AGENDA
+# 4. INGESTIÓN AUTOMÁTICA CON FOOTBALL API 7
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     partidos_analizados = []
@@ -222,43 +222,36 @@ def obtener_partidos_hoy():
 
     if RAPIDAPI_KEY:
         try:
-            url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures?date={fecha_hoy}&timezone=America/Bogota"
+            # Endpoint configurado para Football API 7
+            url = f"https://football-api-7.p.rapidapi.com/api/v1/matches/{fecha_hoy}"
             
             headers = {
-                "X-RapidAPI-Key": RAPIDAPI_KEY,
-                "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "X-RapidAPI-Key": RAPIDAPI_KEY.strip(),
+                "X-RapidAPI-Host": "football-api-7.p.rapidapi.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Accept": "application/json"
             }
             
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=15) as response:
                 res_data = json.loads(response.read().decode('utf-8'))
-                fixtures = res_data.get("response", [])
-                
-                ligas_target = [239, 39, 140, 135, 78, 2]
+                fixtures = res_data.get("events", res_data.get("matches", []))
                 
                 for fix in fixtures:
-                    status_short = fix.get("fixture", {}).get("status", {}).get("short")
-                    league_id = fix.get("league", {}).get("id")
+                    status_short = fix.get("status", {}).get("type", "")
                     
-                    if status_short in ["NS", "TBD"] and (league_id in ligas_target or len(fixtures) <= 8):
-                        local_name = fix["teams"]["home"]["name"]
-                        visita_name = fix["teams"]["away"]["name"]
-                        liga_name = fix["league"]["name"]
+                    # Filtra partidos no iniciados
+                    if status_short in ["notstarted", "NS", "TBD", "scheduled"] or not status_short:
+                        local_name = fix.get("homeTeam", {}).get("name", "Local")
+                        visita_name = fix.get("awayTeam", {}).get("name", "Visitante")
+                        liga_name = fix.get("tournament", {}).get("name", "Liga Profesional")
                         
-                        # Extracción de la fecha y hora oficial del partido
-                        fecha_raw = fix.get("fixture", {}).get("date", "")
-                        try:
-                            dt_obj = datetime.fromisoformat(fecha_raw.replace('Z', '+00:00'))
-                            hora_str = dt_obj.strftime("%d/%m/%Y — %I:%M %p")
-                        except Exception:
-                            hora_str = f"{fecha_hoy} — Hora por confirmar"
+                        hora_str = f"{fecha_hoy} — Programado"
 
                         lambda_loc = 1.40
                         lambda_vis = 1.10
 
-                        # La IA investiga en segundo plano y refina las 10,000 simulaciones
+                        # La IA refina en segundo plano y luego ejecuta las 10,000 simulaciones
                         matriz_stats = evaluar_con_gemini_avanzado(local_name, visita_name, lambda_loc, lambda_vis)
 
                         partidos_analizados.append({
@@ -272,9 +265,9 @@ def obtener_partidos_hoy():
                         if len(partidos_analizados) >= 5:
                             break
         except Exception as e:
-            print(f"Error consultando la API en vivo: {e}")
+            print(f"Error consultando Football API 7: {e}")
 
-    # Agenda de respaldo si la API no retorna partidos
+    # Agenda de contingencia automática si no retorna eventos
     if not partidos_analizados:
         agenda_backup = [
             {
