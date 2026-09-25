@@ -128,7 +128,7 @@ def simular_monte_carlo(matriz_prob, num_simulaciones=10000, k_altitud=1.0, k_te
         ("Goles: Over 1.5 Total", round(p_over15, 1)),
         ("Goles: Under 2.5 Total", round(p_under25, 1)),
         ("Ambos Anotan: SÍ", round(p_btts_si, 1)),
-        ("Ambos Anotan: NO", round(p_btts_no, 1)),
+        ("Ambos Anotan: SÍ", round(p_btts_no, 1)),
     ]
 
     opciones_secundarias = [
@@ -214,15 +214,15 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
     return f"El enfrentamiento entre {equipo_local} y {equipo_visitante} presenta un perfil competitivo optimizado tras 10,000 simulaciones Monte Carlo, respaldado por la métrica {matriz_stats['top_pick']}."
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN AUTOMÁTICA Y FILTRADO ESTRICTO DE AGENDA REAL
+# 4. INGESTIÓN AUTOMÁTICA Y FILTRADO DINÁMICO DE AGENDA
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     partidos_analizados = []
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
+    # Intento 1: Conexión dinámica a la API de Football
     if RAPIDAPI_KEY:
         try:
-            # Consulta la agenda programada para la fecha actual en zona horaria Colombia
             url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures?date={fecha_hoy}&timezone=America/Bogota"
             req = urllib.request.Request(url, headers={
                 "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -232,15 +232,15 @@ def obtener_partidos_hoy():
                 res_data = json.loads(response.read().decode('utf-8'))
                 fixtures = res_data.get("response", [])
                 
-                # IDs de ligas monitorizadas: Liga BetPlay (239), Premier League (39), La Liga (140), Serie A (135), Champions (2)
+                # IDs de ligas objetivo: Liga BetPlay (239), Premier League (39), La Liga (140), Serie A (135), Champions (2)
                 ligas_target = [239, 39, 140, 135, 78, 2]
                 
                 for fix in fixtures:
                     status_short = fix.get("fixture", {}).get("status", {}).get("short")
                     league_id = fix.get("league", {}).get("id")
                     
-                    # FILTRO REGLA DE ORO: Solo procesa partidos programados ("NS" - Not Started)
-                    if status_short == "NS" and (league_id in ligas_target or len(fixtures) <= 3):
+                    # Filtro de seguridad: Solo partidos programados ("NS" = Not Started)
+                    if status_short in ["NS", "TBD"] and (league_id in ligas_target or len(fixtures) <= 5):
                         local_name = fix["teams"]["home"]["name"]
                         visita_name = fix["teams"]["away"]["name"]
                         liga_name = fix["league"]["name"]
@@ -259,10 +259,10 @@ def obtener_partidos_hoy():
                             "gemini": justificacion_ia
                         })
                         
-                        if len(partidos_analizados) >= 5:  # Límite máximo de análisis por jornada
+                        if len(partidos_analizados) >= 5:
                             break
         except Exception as e:
-            print(f"Error en consulta en vivo a la API: {e}")
+            print(f"Error consultando la API en vivo: {e}")
 
     return partidos_analizados
 
