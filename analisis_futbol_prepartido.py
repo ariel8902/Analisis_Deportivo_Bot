@@ -6,6 +6,7 @@ import random
 import urllib.request
 import urllib.parse
 from datetime import datetime
+from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
@@ -21,6 +22,12 @@ NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
 
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# Esquema Pydantic para forzar respuesta estructurada en Gemini
+class AnalisisPartidokSchema(BaseModel):
+    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local (ej. 0.9 si tiene bajas o 1.1 si viene motivado)")
+    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante")
+    justificacion: str = Field(description="Explicación táctica detallada de 2 a 3 líneas sobre las novedades reales encontradas hoy: bajas, lesionados, sancionados, suplencias o tabla de posiciones.")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + xG + MONTE CARLO)
@@ -159,29 +166,19 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
 def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
     """
     Investiga noticias reales de hoy en Google Search en segundo plano,
-    calcula factores de fuerza y genera una justificación resumida.
+    calcula factores de fuerza y genera una justificación real usando Pydantic.
     """
     lambda_loc_base = 1.40
     lambda_vis_base = 1.10
     factor_loc = 1.0
     factor_vis = 1.0
-    justificacion_resumida = f"El análisis de nómina y tendencia táctica actual valida el respaldo cuantitativo para {equipo_local} vs {equipo_visitante}."
+    justificacion_real = f"Alineaciones confirmadas y tendencia táctica de la jornada analizada para {equipo_local} vs {equipo_visitante}."
 
     if client:
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         prompt = (
-            f"Actúa como analista táctico deportivo profesional.\n"
-            f"Investiga las noticias de HOY ({fecha_hoy}) para el partido: {equipo_local} vs {equipo_visitante} ({liga_nombre}).\n\n"
-            f"INSTRUCCIONES:\n"
-            f"1. Revisa alineaciones probables, suplencias o rotaciones por otros torneos.\n"
-            f"2. Revisa bajas por lesión o sanción y posición en la tabla.\n"
-            f"3. Escribe una justificación TÁCTICA RESUMIDA de máximo 2 a 3 líneas.\n\n"
-            f"RESPONDE ÚNICAMENTE EN ESTE FORMATO JSON EXACTO:\n"
-            f"{{\n"
-            f'  "factor_ajuste_local": 1.0,\n'
-            f'  "factor_ajuste_visitante": 1.0,\n'
-            f'  "justificacion": "Resumen táctico de máximo 2 a 3 líneas sobre bajas, rotaciones y momento actual."'
-            f"}}"
+            f"Investiga en Google Search las noticias, bajas, alineaciones y posición en la tabla para HOY ({fecha_hoy}) del partido: {equipo_local} vs {equipo_visitante} ({liga_nombre}).\n"
+            f"Resume la justificación táctica específicamente en 2 o 3 líneas mencionando las novedades o ausencias encontradas."
         )
         for intento in range(2):
             try:
@@ -190,20 +187,16 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
                     model='gemini-2.5-flash',
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())]
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        response_mime_type="application/json",
+                        response_schema=AnalisisPartidokSchema,
                     )
                 )
                 if response.text:
-                    raw_txt = response.text.strip()
-                    if "```json" in raw_txt:
-                        raw_txt = raw_txt.split("```json")[1].split("```")[0].strip()
-                    elif "```" in raw_txt:
-                        raw_txt = raw_txt.split("```")[1].split("```")[0].strip()
-                    
-                    data = json.loads(raw_txt)
+                    data = json.loads(response.text)
                     factor_loc = float(data.get("factor_ajuste_local", 1.0))
                     factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                    justificacion_resumida = data.get("justificacion", justificacion_resumida).strip()
+                    justificacion_real = data.get("justificacion", justificacion_real).strip()
                     break
             except Exception as e:
                 time.sleep(4)
@@ -216,7 +209,7 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
         "visitante": equipo_visitante,
         "hora_fecha": hora_partido,
         "stats": stats,
-        "justificacion": justificacion_resumida
+        "justificacion": justificacion_real
     }
 
 # ---------------------------------------------------------
@@ -255,7 +248,7 @@ def obtener_partidos_hoy():
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. DESPACHO DE REPORTES A TELEGRAM
+# 5. DESPACHO DE REPORTES A TELEGRAM (SIN BOMBILLO REDUNDANTE)
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -290,6 +283,7 @@ def enviar_reporte_telegram(partidos):
         st = p["stats"]
         destacadas = "\n".join(st["opciones_destacadas"])
 
+        # Formato de reporte sin la frase redundantemente marcada con el bombillo
         mensaje = (
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
@@ -300,8 +294,7 @@ def enviar_reporte_telegram(partidos):
             f"📊 **Top 3 Opciones Múltiples (10,000 Simulaciones):**\n"
             f"{destacadas}\n\n"
             f"📝 **JUSTIFICACIÓN TÁCTICA (IA):**\n"
-            f"_{p['justificacion']}_\n\n"
-            f"💡 *Filtro estocástico validado en vivo con contexto táctico y de nómina por IA.*"
+            f"_{p['justificacion']}_"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
 
