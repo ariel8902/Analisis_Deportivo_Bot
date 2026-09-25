@@ -23,10 +23,10 @@ NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Esquema Pydantic dinámico y universal para cualquier equipo/liga del mundo
+# Esquema Pydantic para la extracción estricta de factores numéricos y posiciones
 class AnalisisPartidoDinamicoSchema(BaseModel):
-    posicion_exacta_local: str = Field(description="Puesto numérico exacto en la tabla del equipo local, ej: '17°' o '17° (8 pts)'. Escribir 'DESCONOCIDO' si no se encuentra.")
-    posicion_exacta_visitante: str = Field(description="Puesto numérico exacto en la tabla del equipo visitante, ej: '15°' o '15° (8 pts)'. Escribir 'DESCONOCIDO' si no se encuentra.")
+    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '17°' o 'Puesto 17'")
+    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '15°' o 'Puesto 15'")
     factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local tras analizar noticias en vivo (1.0 neutro)")
     factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante tras analizar noticias en vivo (1.0 neutro)")
 
@@ -162,26 +162,25 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     )
 
 # ---------------------------------------------------------
-# 3. EXTRACTION DINÁMICA DE POSICIONES Y FUERZA CON GOOGLE SEARCH
+# 3. EXTRACCIÓN DINÁMICA DE POSICIONES Y FUERZA CON GOOGLE SEARCH
 # ---------------------------------------------------------
-def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
+def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre, pos_fallback_loc="En tabla", pos_fallback_vis="En tabla"):
     """
-    Investiga en Google Search en tiempo real la tabla de posiciones y las noticias
-    para CUALQUIER partido del mundo de forma $100\%$ dinámica.
+    Investiga en Google Search en tiempo real la tabla de posiciones y las noticias.
     """
     lambda_loc_base = 1.40
     lambda_vis_base = 1.10
     factor_loc = 1.0
     factor_vis = 1.0
-    pos_local = None
-    pos_visita = None
+    pos_local = pos_fallback_loc
+    pos_visita = pos_fallback_vis
 
     if client:
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         prompt = (
-            f"Busca en Google Search la tabla de posiciones oficial más reciente de la {liga_nombre} ({fecha_hoy}).\n"
-            f"Dime el puesto exacto en la tabla de {equipo_local} (posicion_exacta_local) y de {equipo_visitante} (posicion_exacta_visitante).\n"
-            f"Asimismo, busca alineaciones y bajas de hoy para ajustar los factores numéricos de fuerza."
+            f"Busca en Google Search la tabla de posiciones oficial más reciente de {liga_nombre} para hoy {fecha_hoy}.\n"
+            f"Identifica en qué puesto exacto está {equipo_local} (posicion_exacta_local) y en qué puesto está {equipo_visitante} (posicion_exacta_visitante).\n"
+            f"Ejemplo de respuesta esperada: '17°' o '10°'."
         )
         for intento in range(2):
             try:
@@ -203,11 +202,10 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
                     pl = str(data.get("posicion_exacta_local", "")).strip()
                     pv = str(data.get("posicion_exacta_visitante", "")).strip()
                     
-                    # Validación estricta para evitar textos basura
                     if pl and "DESCONOCIDO" not in pl.upper() and "N/A" not in pl.upper():
-                        pos_local = pl if "°" in pl or "Puesto" in pl or "pts" in pl else f"{pl}°"
+                        pos_local = pl if "°" in pl or "Puesto" in pl else f"{pl}°"
                     if pv and "DESCONOCIDO" not in pv.upper() and "N/A" not in pv.upper():
-                        pos_visita = pv if "°" in pv or "Puesto" in pv or "pts" in pv else f"{pv}°"
+                        pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
                     break
             except Exception as e:
                 time.sleep(4)
@@ -231,18 +229,22 @@ def obtener_partidos_hoy():
     partidos_analizados = []
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
-    # Agenda de la jornada (Totalmente dinámicas las fechas/horas)
+    # Agenda de la jornada diaria
     agenda_jornada = [
         {
             "liga": "Liga BetPlay Colombia",
             "local": "Boyacá Chicó",
             "visitante": "Deportivo Pasto",
+            "pos_loc": "17°",
+            "pos_vis": "15°",
             "hora": f"{fecha_hoy} — 06:10 PM"
         },
         {
             "liga": "Liga BetPlay Colombia",
             "local": "Once Caldas",
             "visitante": "Atlético Bucaramanga",
+            "pos_loc": "10°",
+            "pos_vis": "6°",
             "hora": f"{fecha_hoy} — 08:15 PM"
         }
     ]
@@ -253,14 +255,16 @@ def obtener_partidos_hoy():
             item["local"], 
             item["visitante"], 
             item["hora"], 
-            item["liga"]
+            item["liga"],
+            item.get("pos_loc", "En tabla"),
+            item.get("pos_vis", "En tabla")
         )
         partidos_analizados.append(partido_refinado)
 
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. DESPACHO DE REPORTES A TELEGRAM
+# 5. DESPACHO DE REPORTES A TELEGRAM (CON POSICIÓN OBLIGATORIA)
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -295,17 +299,12 @@ def enviar_reporte_telegram(partidos):
         st = p["stats"]
         destacadas = "\n".join(st["opciones_destacadas"])
 
-        # Construcción dinámica del bloque de posiciones
-        linea_posicion = ""
-        if p.get("pos_local") and p.get("pos_visita"):
-            linea_posicion = f"📌 **Posición en Tabla:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
-
-        # Mensaje final formateado
+        # Mensaje final formateado garantizando SIEMPRE la línea de posición
         mensaje = (
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
             f"⚔️ **{p['local']} vs {p['visitante']}**\n"
-            f"{linea_posicion}"
+            f"📌 **Posición en Tabla:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
             f"🕓 `{p['hora_fecha']}`\n\n"
             f"🎯 **OPCIÓN PRINCIPAL DE MAYOR CERTEZA:**\n"
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
