@@ -23,12 +23,12 @@ NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Esquema Pydantic para la extracción estricta de factores numéricos y posiciones
-class AjusteFuerzaSchema(BaseModel):
-    posicion_local: str = Field(description="Puesto numérico del equipo local en la tabla actual, ej: '18°' o 'Puesto 18'")
-    posicion_visitante: str = Field(description="Puesto numérico del equipo visitante en la tabla actual, ej: '7°' o 'Puesto 7'")
-    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local tras analizar noticias en vivo")
-    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante tras analizar noticias en vivo")
+# Esquema Pydantic dinámico y universal para cualquier equipo/liga del mundo
+class AnalisisPartidoDinamicoSchema(BaseModel):
+    posicion_exacta_local: str = Field(description="Puesto numérico exacto en la tabla del equipo local, ej: '17°' o '17° (8 pts)'. Escribir 'DESCONOCIDO' si no se encuentra.")
+    posicion_exacta_visitante: str = Field(description="Puesto numérico exacto en la tabla del equipo visitante, ej: '15°' o '15° (8 pts)'. Escribir 'DESCONOCIDO' si no se encuentra.")
+    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local tras analizar noticias en vivo (1.0 neutro)")
+    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante tras analizar noticias en vivo (1.0 neutro)")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + xG + MONTE CARLO)
@@ -162,37 +162,37 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     )
 
 # ---------------------------------------------------------
-# 3. BÚSQUEDA TÁCTICA Y REFINACIÓN EN VIVO (IA + GOOGLE SEARCH)
+# 3. EXTRACTION DINÁMICA DE POSICIONES Y FUERZA CON GOOGLE SEARCH
 # ---------------------------------------------------------
 def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
     """
-    Investiga en Google Search la posición de los equipos en la tabla y
-    extrae coeficientes para refinar Monte Carlo.
+    Investiga en Google Search en tiempo real la tabla de posiciones y las noticias
+    para CUALQUIER partido del mundo de forma $100\%$ dinámica.
     """
     lambda_loc_base = 1.40
     lambda_vis_base = 1.10
     factor_loc = 1.0
     factor_vis = 1.0
-    pos_local = "En competencia"
-    pos_visita = "En competencia"
+    pos_local = None
+    pos_visita = None
 
     if client:
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         prompt = (
-            f"Busca en Google Search la tabla de posiciones oficial de HOY ({fecha_hoy}) en la {liga_nombre}.\n"
-            f"Extrae el puesto exacto en la tabla para {equipo_local} (posicion_local) y para {equipo_visitante} (posicion_visitante).\n"
-            f"Asimismo, analiza bajas, lesiones o rotaciones recientes para asignar los factores numéricos de fuerza."
+            f"Busca en Google Search la tabla de posiciones oficial más reciente de la {liga_nombre} ({fecha_hoy}).\n"
+            f"Dime el puesto exacto en la tabla de {equipo_local} (posicion_exacta_local) y de {equipo_visitante} (posicion_exacta_visitante).\n"
+            f"Asimismo, busca alineaciones y bajas de hoy para ajustar los factores numéricos de fuerza."
         )
         for intento in range(2):
             try:
-                time.sleep(6)  # Control de tasa para evitar rate-limits
+                time.sleep(6)  # Control de tasa
                 response = client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         tools=[types.Tool(google_search=types.GoogleSearch())],
                         response_mime_type="application/json",
-                        response_schema=AjusteFuerzaSchema,
+                        response_schema=AnalisisPartidoDinamicoSchema,
                     )
                 )
                 if response.text:
@@ -200,18 +200,19 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
                     factor_loc = float(data.get("factor_ajuste_local", 1.0))
                     factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
                     
-                    pl = str(data.get("posicion_local", "")).strip()
-                    pv = str(data.get("posicion_visitante", "")).strip()
+                    pl = str(data.get("posicion_exacta_local", "")).strip()
+                    pv = str(data.get("posicion_exacta_visitante", "")).strip()
                     
-                    if pl and pl.upper() != "N/A":
-                        pos_local = pl if "°" in pl or "Puesto" in pl else f"{pl}°"
-                    if pv and pv.upper() != "N/A":
-                        pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
+                    # Validación estricta para evitar textos basura
+                    if pl and "DESCONOCIDO" not in pl.upper() and "N/A" not in pl.upper():
+                        pos_local = pl if "°" in pl or "Puesto" in pl or "pts" in pl else f"{pl}°"
+                    if pv and "DESCONOCIDO" not in pv.upper() and "N/A" not in pv.upper():
+                        pos_visita = pv if "°" in pv or "Puesto" in pv or "pts" in pv else f"{pv}°"
                     break
             except Exception as e:
                 time.sleep(4)
 
-    # REFINACIÓN FINAL: Se recalculan las 10,000 simulaciones sobre los coeficientes refinados por la IA
+    # REFINACIÓN FINAL DE MONTE CARLO (10,000 iteraciones)
     stats = evaluar_partido_completo(lambda_loc_base * factor_loc, lambda_vis_base * factor_vis)
     return {
         "liga": liga_nombre,
@@ -224,13 +225,13 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
     }
 
 # ---------------------------------------------------------
-# 4. INGESTIÓN AUTOMÁTICA Y AGENDA DINÁMICA CON GOOGLE SEARCH
+# 4. INGESTIÓN AUTOMÁTICA DE LA JORNADA
 # ---------------------------------------------------------
 def obtener_partidos_hoy():
     partidos_analizados = []
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
-    # Agenda base de la jornada diaria (BetPlay Colombia)
+    # Agenda de la jornada (Totalmente dinámicas las fechas/horas)
     agenda_jornada = [
         {
             "liga": "Liga BetPlay Colombia",
@@ -246,7 +247,7 @@ def obtener_partidos_hoy():
         }
     ]
 
-    print("Iniciando refinación táctica con Monte Carlo e Inteligencia Cualitativa...")
+    print("Iniciando refinación táctica con Monte Carlo e Búsqueda Dinámica de la Tabla...")
     for item in agenda_jornada:
         partido_refinado = analizar_y_refinar_partido_ia(
             item["local"], 
@@ -259,7 +260,7 @@ def obtener_partidos_hoy():
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. DESPACHO DE REPORTES A TELEGRAM (CON LÍNEA DE POSICIONES)
+# 5. DESPACHO DE REPORTES A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -294,12 +295,17 @@ def enviar_reporte_telegram(partidos):
         st = p["stats"]
         destacadas = "\n".join(st["opciones_destacadas"])
 
-        # Ficha estructurada con la posición visible en su propia línea
+        # Construcción dinámica del bloque de posiciones
+        linea_posicion = ""
+        if p.get("pos_local") and p.get("pos_visita"):
+            linea_posicion = f"📌 **Posición en Tabla:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
+
+        # Mensaje final formateado
         mensaje = (
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
             f"⚔️ **{p['local']} vs {p['visitante']}**\n"
-            f"📌 **Posición en Tabla:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
+            f"{linea_posicion}"
             f"🕓 `{p['hora_fecha']}`\n\n"
             f"🎯 **OPCIÓN PRINCIPAL DE MAYOR CERTEZA:**\n"
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
