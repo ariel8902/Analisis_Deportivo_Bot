@@ -17,7 +17,7 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0  # Porcentaje mínimo para filtrar alternativas en Telegram
 
-# Inicialización del cliente moderno de Google Gemini
+# Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ---------------------------------------------------------
@@ -99,7 +99,7 @@ def evaluar_matriz_mercados(lambda_local=1.65, lambda_vis=1.05, max_goles=6):
     }
 
 # ---------------------------------------------------------
-# 3. FILTRO CUALITATIVO CON SDK OFICIAL (GOOGLE-GENAI) Y GOOGLE SEARCH
+# 3. FILTRO CUALITATIVO CON MODELO GEMINI-3.8-FLASH Y GOOGLE SEARCH
 # ---------------------------------------------------------
 def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
     if not client:
@@ -120,7 +120,7 @@ def evaluar_con_gemini_avanzado(equipo_local, equipo_visitante, matriz_stats):
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.8-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())]
