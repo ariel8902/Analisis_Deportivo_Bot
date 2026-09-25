@@ -23,10 +23,10 @@ NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Esquema Pydantic para la extracción estricta de factores numéricos y posiciones en la tabla
+# Esquema Pydantic para la extracción estricta de factores numéricos y posiciones
 class AjusteFuerzaSchema(BaseModel):
-    posicion_local: str = Field(description="Posición actual del equipo local en la tabla (ej. '8°' o 'N/A')")
-    posicion_visitante: str = Field(description="Posición actual del equipo visitante en la tabla (ej. '12°' o 'N/A')")
+    posicion_local: str = Field(description="Puesto numérico del equipo local en la tabla actual, ej: '18°' o 'Puesto 18'")
+    posicion_visitante: str = Field(description="Puesto numérico del equipo visitante en la tabla actual, ej: '7°' o 'Puesto 7'")
     factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local tras analizar noticias en vivo")
     factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante tras analizar noticias en vivo")
 
@@ -166,21 +166,22 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
 # ---------------------------------------------------------
 def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
     """
-    Investiga noticias reales de hoy y posiciones en la tabla vía Google Search
-    para extraer coeficientes y refrescar la posición de cada equipo.
+    Investiga en Google Search la posición de los equipos en la tabla y
+    extrae coeficientes para refinar Monte Carlo.
     """
     lambda_loc_base = 1.40
     lambda_vis_base = 1.10
     factor_loc = 1.0
     factor_vis = 1.0
-    pos_local = ""
-    pos_visita = ""
+    pos_local = "En competencia"
+    pos_visita = "En competencia"
 
     if client:
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         prompt = (
-            f"Investiga en Google Search la posición actual en la tabla de clasificación de HOY ({fecha_hoy}) para {equipo_local} y {equipo_visitante} en la {liga_nombre}.\n"
-            f"Analiza alineaciones, lesiones, sanciones, rotaciones y momento deportivo para determinar los factores numéricos de ajuste de fuerza."
+            f"Busca en Google Search la tabla de posiciones oficial de HOY ({fecha_hoy}) en la {liga_nombre}.\n"
+            f"Extrae el puesto exacto en la tabla para {equipo_local} (posicion_local) y para {equipo_visitante} (posicion_visitante).\n"
+            f"Asimismo, analiza bajas, lesiones o rotaciones recientes para asignar los factores numéricos de fuerza."
         )
         for intento in range(2):
             try:
@@ -198,13 +199,14 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
                     data = json.loads(response.text)
                     factor_loc = float(data.get("factor_ajuste_local", 1.0))
                     factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                    pos_loc_str = str(data.get("posicion_local", "")).strip()
-                    pos_vis_str = str(data.get("posicion_visitante", "")).strip()
                     
-                    if pos_loc_str and pos_loc_str.upper() != "N/A":
-                        pos_local = f" ({pos_loc_str})"
-                    if pos_vis_str and pos_vis_str.upper() != "N/A":
-                        pos_visita = f" ({pos_vis_str})"
+                    pl = str(data.get("posicion_local", "")).strip()
+                    pv = str(data.get("posicion_visitante", "")).strip()
+                    
+                    if pl and pl.upper() != "N/A":
+                        pos_local = pl if "°" in pl or "Puesto" in pl else f"{pl}°"
+                    if pv and pv.upper() != "N/A":
+                        pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
                     break
             except Exception as e:
                 time.sleep(4)
@@ -213,8 +215,10 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
     stats = evaluar_partido_completo(lambda_loc_base * factor_loc, lambda_vis_base * factor_vis)
     return {
         "liga": liga_nombre,
-        "local": f"{equipo_local}{pos_local}",
-        "visitante": f"{equipo_visitante}{pos_visita}",
+        "local": equipo_local,
+        "visitante": equipo_visitante,
+        "pos_local": pos_local,
+        "pos_visita": pos_visita,
         "hora_fecha": hora_partido,
         "stats": stats
     }
@@ -255,7 +259,7 @@ def obtener_partidos_hoy():
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. DESPACHO DE REPORTES A TELEGRAM (CON POSICIONES EN TABLA)
+# 5. DESPACHO DE REPORTES A TELEGRAM (CON LÍNEA DE POSICIONES)
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -290,11 +294,12 @@ def enviar_reporte_telegram(partidos):
         st = p["stats"]
         destacadas = "\n".join(st["opciones_destacadas"])
 
-        # Ficha con posición de la tabla integrada junto a cada equipo (ej. Boyacá Chicó (18°) vs Deportivo Pasto (7°))
+        # Ficha estructurada con la posición visible en su propia línea
         mensaje = (
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
             f"⚔️ **{p['local']} vs {p['visitante']}**\n"
+            f"📌 **Posición en Tabla:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
             f"🕓 `{p['hora_fecha']}`\n\n"
             f"🎯 **OPCIÓN PRINCIPAL DE MAYOR CERTEZA:**\n"
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
