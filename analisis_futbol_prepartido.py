@@ -25,10 +25,10 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 MODELO_OFICIAL = 'gemini-3.8-flash'
 
-# FILTRO OBLIGATORIO DE LIGAS PRIORITARIAS (EVITA SUB-21 Y LIGAS MENORES)
-LIGAS_PRIORITARIAS = [
-    "PRIMERA A", "BETPLAY", "COLOMBIA", "LALIGA", "PREMIER LEAGUE", 
-    "SERIE A", "BUNDESLIGA", "LIGUE 1", "CHAMPIONS LEAGUE", "EUROPA LEAGUE"
+# CRITERIOS AMPLIOS DE MATCHING DE LIGAS (CAPTURA TODAS LAS VARIANTES)
+PALABRAS_CLAVE_LIGAS = [
+    "COLOMBIA", "PRIMERA A", "BETPLAY", "LALIGA", "PREMIER", 
+    "SERIE A", "BUNDESLIGA", "LIGUE 1", "CHAMPIONS", "EUROPA", "CONFERENCIA"
 ]
 
 class AjusteFuerzaSchema(BaseModel):
@@ -154,7 +154,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. AGENDA FILTRADA + VALIDACIÓN CON GEMINI 3.8-FLASH
+# 3. AGENDA FILTRADA FLEXIBLE + VALIDACIÓN CON GEMINI 3.8-FLASH
 # ---------------------------------------------------------
 def analizar_partido_con_gemini(local, visitante, liga):
     factor_loc, factor_vis = 1.0, 1.0
@@ -217,8 +217,8 @@ def obtener_jornada_completa():
                         liga = ev.get("strLeague", "").strip()
                         liga_upper = liga.upper()
                         
-                        # FILTRADO DE SEGURIDAD PARA LIGAS PRINCIPALES
-                        if any(lp in liga_upper for lp in LIGAS_PRIORITARIAS):
+                        # MATCHING FLEXIBLE QUE EVITA DESCARTE DE LIGAS PRINCIPALES
+                        if any(kw in liga_upper for kw in PALABRAS_CLAVE_LIGAS):
                             local = ev.get("strHomeTeam", "Local")
                             visitante = ev.get("strAwayTeam", "Visitante")
                             hora_str = ev.get("strTime", "00:00:00")
@@ -266,7 +266,7 @@ def enviar_reporte_telegram(partidos):
         fecha_actual = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
         mensaje = (
             f"🛡️ **REPORTE DE JORNADA - {fecha_actual}**\n\n"
-            f"📊 *No se registran partidos programados de las ligas prioritarias (Liga BetPlay / Ligas Europeas) para el día de hoy.*\n\n"
+            f"📊 *No se registran partidos programados en las ligas prioritarias para el día de hoy.*\n\n"
             f"💡 *El sistema reanudará las simulaciones en la siguiente fecha con agenda activa.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
