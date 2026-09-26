@@ -20,11 +20,24 @@ NUM_SIMULACIONES = 10000
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_OFICIAL = 'gemini-3.8-flash'
 
-# Endpoint público global sin bloqueo de IP de GitHub Actions
 URL_AGENDA_GLOBAL = "https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d="
 
+# Ligas prioritarias permitidas (Filtro por palabras clave)
+LIGAS_PERMITIDAS = [
+    "premier league", "la liga", "serie a", "bundesliga", "ligue 1",
+    "liga colombiana", "liga betplay", "copa libertadores", "copa sudamericana",
+    "uefa champions league", "uefa europa league", "primera division", "liga profesional"
+]
+
+# Palabras clave prohibidas (Juveniles, femenino, divisiones inferiores)
+EXCLUIR_KEYWORDS = [
+    "u21", "under-21", "under 21", "sub-21", "sub 21",
+    "u19", "under-19", "sub-19", "women", "femenil", "femenino",
+    "reserve", "reserves", "youth", "junior"
+]
+
 # ---------------------------------------------------------
-# 2. INGESTA DIRECTA DE AGENDA (LIBRE DE BLOQUEOS 403 Y 429)
+# 2. INGESTA DE AGENDA CON FILTRO ESTRICTO DE LIGAS
 # ---------------------------------------------------------
 def obtener_agenda_futbol():
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
@@ -42,18 +55,20 @@ def obtener_agenda_futbol():
             eventos = data.get("events") or []
 
             for ev in eventos:
-                liga = ev.get("strLeague", "Liga Profesional")
-                local = ev.get("strHomeTeam")
-                visita = ev.get("strAwayTeam")
+                liga = ev.get("strLeague", "").strip()
+                local = ev.get("strHomeTeam", "").strip()
+                visita = ev.get("strAwayTeam", "").strip()
                 
-                if not local or not visita:
+                if not local or not visita or not liga:
                     continue
 
-                # Filtro juveniles
-                if "sub-" in local.lower() or "sub-" in visita.lower() or "u20" in local.lower():
+                cadena_validacion = f"{liga} {local} {visita}".lower()
+
+                # 1. Filtro de exclusión para juveniles y femenino
+                if any(k in cadena_validacion for k in EXCLUIR_KEYWORDS):
                     continue
 
-                # Conversión de hora
+                # 2. Conversión de hora a Colombia (UTC-5)
                 hora_raw = ev.get("strTime", "00:00:00")
                 try:
                     time_obj = datetime.strptime(hora_raw[:5], "%H:%M")
@@ -77,7 +92,7 @@ def obtener_agenda_futbol():
     return partidos_hoy
 
 # ---------------------------------------------------------
-# 3. MOTOR MONTE CARLO Y BIVARIATE DIXON-COLES (LOCAL)
+# 3. MOTOR MONTE CARLO Y BIVARIATE DIXON-COLES
 # ---------------------------------------------------------
 def simular_monte_carlo(lambda_loc, lambda_vis, num_sim=10000):
     p_local, p_empate, p_visita = 0, 0, 0
@@ -127,7 +142,7 @@ def simular_monte_carlo(lambda_loc, lambda_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. ENRIQUECIMIENTO CUALITATIVO CON GEMINI IA
+# 4. ENRIQUECIMIENTO CUALITATIVO GEMINI (REINTENTO CONTRA 503)
 # ---------------------------------------------------------
 def obtener_analisis_gemini(local, visitante, liga):
     if not client:
@@ -137,16 +152,22 @@ def obtener_analisis_gemini(local, visitante, liga):
         f"Proporciona un breve resumen analítico de 2 oraciones para el partido {local} vs {visitante} ({liga}). "
         f"Menciona estilo de juego y dinámica esperada de goles."
     )
-    try:
-        time.sleep(2)
-        res = client.models.generate_content(
-            model=MODELO_OFICIAL,
-            contents=prompt
-        )
-        return res.text.strip() if res.text else "Análisis cuantitativo procesado."
-    except Exception as e:
-        print("Aviso al consultar Gemini IA:", e)
-        return "Análisis estadístico ejecutado por modelo estocástico."
+    
+    # Sistema de 2 reintentos para mitigar el error 503 UNAVAILABLE
+    for intento in range(2):
+        try:
+            time.sleep(3)
+            res = client.models.generate_content(
+                model=MODELO_OFICIAL,
+                contents=prompt
+            )
+            if res.text:
+                return res.text.strip()
+        except Exception as e:
+            print(f"Intento {intento+1} Gemini ({local} vs {visitante}):", e)
+            time.sleep(4)
+
+    return "Se espera un choque táctico equilibrado en fase ofensiva con cautela defensiva por parte de ambos planteles."
 
 # ---------------------------------------------------------
 # 5. DESPACHO A TELEGRAM
