@@ -8,12 +8,12 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS
+# 1. CONFIGURACIÓN Y CREDENCIALES (DESDE GITHUB SECRETS)
 # ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = "8650458483:AAFHgr5-yBeYdU3_T153BuSeNC2iSbV1BQ4"
-TELEGRAM_CHAT_ID = "8707489920"
-ODDS_API_KEY = "f52fed19ba1071472e5a25c88fa23053"
-GROQ_API_KEY = "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"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY") or "f52fed19ba1071472e5a25c88fa23053"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
@@ -23,7 +23,7 @@ NUM_SIMULACIONES = 10000
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-# Ligas idénticas a tu Google Apps Script + Colombia
+# Ligas principales
 LIGAS_TOP = [
     {"key": "soccer_colombia_liga_aguila", "nombre": "🇨🇴 Liga BetPlay"},
     {"key": "soccer_epl", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
@@ -40,12 +40,11 @@ HEADERS_NAV = {
 }
 
 # ---------------------------------------------------------
-# 2. INGESTA DIRECTA (ESTILO GOOGLE APPS SCRIPT)
+# 2. INGESTA DE PARTIDOS
 # ---------------------------------------------------------
 def obtener_partidos_jornada():
     lista_partidos = []
 
-    # 1. Traer partidos desde The-Odds-API sin filtros restrictivos
     for liga in LIGAS_TOP:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['key']}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h"
         try:
@@ -90,7 +89,7 @@ def obtener_partidos_jornada():
         except Exception as e:
             print(f"Aviso consultando {liga['nombre']}:", e)
 
-    # 2. Respaldo directo de ESPN para asegurar siempre la Liga BetPlay colombiana
+    # Respaldo ESPN para Colombia
     url_espn = "https://site.api.espn.com/apis/site/v2/sports/soccer/col.1/scoreboard"
     try:
         res_espn = requests.get(url_espn, headers=HEADERS_NAV, timeout=8)
@@ -118,7 +117,6 @@ def obtener_partidos_jornada():
                     except Exception:
                         hora_fmt = "En Agendamiento"
 
-                    # Evitamos duplicados si la Odds API ya trajo el partido
                     if not any(p["local"] == nom_loc for p in lista_partidos):
                         lista_partidos.append({
                             "liga": "🇨🇴 Liga BetPlay",
@@ -193,7 +191,7 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. ANÁLISIS DE IA COMBINADO (GROQ BASE + GEMINI REFINAMIENTO)
+# 4. ANÁLISIS DE IA COMBINADO
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -263,6 +261,10 @@ def refinamiento_final_gemini(partido, sim_data, base_ia):
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Error: Variables de Telegram no detectadas desde GitHub Secrets.")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
