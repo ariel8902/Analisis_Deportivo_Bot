@@ -24,37 +24,25 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 MODELO_OFICIAL = 'gemini-3.8-flash'
 
-PALABRAS_CLAVE_LIGAS = [
-    "COLOMBIA", "COLOMBIAN", "PRIMERA A", "BETPLAY", "LALIGA", "SPANISH", 
-    "PREMIER", "ENGLISH", "SERIE A", "ITALIAN", "BUNDESLIGA", "GERMAN", 
-    "LIGUE 1", "FRENCH", "CHAMPIONS", "EUROPA LEAGUE", "CONFERENCE"
-]
-
-EXCLUSIONES_ESTRICTAS = [
-    "UNDER-21", "U21", "SUB-21", "SUB 21", "UNDER-20", "U20", "SUB-20", 
-    "WOMEN", "FEMENINO", "YOUTH", "RESERVES", "AMATEUR"
-]
-
 HEADERS_NAVEGADOR = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
 
-class PartidoRespaldoSchema(BaseModel):
+# Esquemas Pydantic Estructurados para Extracción Consolidada
+class PartidoDetalleSchema(BaseModel):
     liga: str = Field(description="Nombre de la liga o torneo principal")
     local: str = Field(description="Nombre del equipo local")
     visitante: str = Field(description="Nombre del equipo visitante")
-    hora: str = Field(description="Hora programada de hoy")
+    hora: str = Field(description="Hora programada del partido hoy")
+    pos_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '3°'")
+    pos_visita: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '5°'")
+    factor_ajuste_local: float = Field(description="Factor de fuerza del local (1.0 neutro)")
+    factor_ajuste_visitante: float = Field(description="Factor de fuerza del visitante (1.0 neutro)")
 
-class AgendaRespaldoSchema(BaseModel):
-    partidos: list[PartidoRespaldoSchema] = Field(description="Lista de partidos de primera categoría programados para HOY")
-
-class AjusteFuerzaSchema(BaseModel):
-    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '3°'")
-    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '5°'")
-    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza local (1.0 neutro)")
-    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza visitante (1.0 neutro)")
+class JornadaConsolidadaSchema(BaseModel):
+    partidos: list[PartidoDetalleSchema] = Field(description="Lista de partidos de primera categoría programados para HOY")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + MONTE CARLO)
@@ -173,186 +161,71 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN CON REINTENTO EXTENDIDO PARA CUOTAS (429)
+# 3. EXTRACTION CONSOLIDADA Y CONTROL DE CUOTA
 # ---------------------------------------------------------
-def analizar_partido_con_gemini(local, visitante, liga):
-    factor_loc, factor_vis = 1.0, 1.0
-    pos_local, pos_visita = "En tabla", "En tabla"
-
-    if client:
-        fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-        prompt = (
-            f"Investiga en Google Search el partido de hoy ({fecha_hoy}): {local} vs {visitante} ({liga}).\n"
-            f"Obtén el puesto exacto en la tabla de posiciones de cada equipo y estima el factor de ajuste de fuerza."
-        )
-        for intento in range(2):
-            try:
-                time.sleep(4)
-                response = client.models.generate_content(
-                    model=MODELO_OFICIAL,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                        response_mime_type="application/json",
-                        response_schema=AjusteFuerzaSchema,
-                    )
-                )
-                if response.text:
-                    data = json.loads(response.text)
-                    factor_loc = float(data.get("factor_ajuste_local", 1.0))
-                    factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                    pl = str(data.get("posicion_exacta_local", "")).strip()
-                    pv = str(data.get("posicion_exacta_visitante", "")).strip()
-                    if pl and "DESCONOCIDO" not in pl.upper():
-                        pos_local = pl if "°" in pl else f"{pl}°"
-                    if pv and "DESCONOCIDO" not in pv.upper():
-                        pos_visita = pv if "°" in pv else f"{pv}°"
-                    break
-            except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    time.sleep(12)
-                else:
-                    break
-
-    stats = evaluar_partido_completo(1.40 * factor_loc, 1.10 * factor_vis)
-    return pos_local, pos_visita, stats
-
-def buscar_agenda_directa_gemini(fecha_hoy):
+def obtener_jornada_completa():
     if not client:
         return []
-        
-    print("Activando Nivel 3: Búsqueda web de agenda profesional con Gemini 3.8...")
+
+    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
+    print(f"Iniciando consulta de agenda para la fecha {fecha_hoy}...")
+
     prompt = (
         f"Investiga en Google Search los partidos de fútbol profesional de PRIMERA CATEGORÍA que se juegan HOY {fecha_hoy}.\n"
-        f"Busca partidos en Liga BetPlay Colombia, LaLiga, Premier League, Serie A, Bundesliga, Ligue 1 o Champions League.\n"
-        f"NO incluyas torneos Sub-21, juveniles ni ligas femeninas. Devuelve la lista en formato JSON exacto."
+        f"Prioriza: Liga BetPlay Colombia, LaLiga, Premier League, Serie A, Bundesliga, Ligue 1 o Champions League.\n"
+        f"NO incluyas torneos Sub-21, juveniles ni ligas femeninas.\n"
+        f"Para cada partido, extrae las posiciones exactas en la tabla y estimación de fuerza.\n"
+        f"Devuelve la lista completa en formato JSON exacto."
     )
-    
-    # MARGEN EXPANDIDO A 25 SEGUNDOS PARA REFRESCAR LA CUOTA EN GOOGLE
-    for intento in range(1, 3):
+
+    max_reintentos = 3
+    for intento in range(1, max_reintentos + 1):
         try:
+            print(f"Conectando con {MODELO_OFICIAL} (Intento {intento}/{max_reintentos})...")
             response = client.models.generate_content(
                 model=MODELO_OFICIAL,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
                     response_mime_type="application/json",
-                    response_schema=AgendaRespaldoSchema,
+                    response_schema=JornadaConsolidadaSchema,
                 )
             )
             if response.text:
                 data = json.loads(response.text)
                 partidos_raw = data.get("partidos", [])
-                partidos = []
-                for p in partidos_raw:
-                    pos_loc, pos_vis, stats = analizar_partido_con_gemini(p["local"], p["visitante"], p["liga"])
-                    partidos.append({
-                        "liga": p["liga"].upper(),
-                        "local": p["local"],
-                        "visitante": p["visitante"],
-                        "pos_local": pos_loc,
-                        "pos_visita": pos_vis,
-                        "hora_fecha": f"{fecha_hoy} — {p['hora']}",
+                
+                partidos_analizados = []
+                for item in partidos_raw:
+                    f_loc = float(item.get("factor_ajuste_local", 1.0))
+                    f_vis = float(item.get("factor_ajuste_visitante", 1.0))
+                    
+                    stats = evaluar_partido_completo(1.40 * f_loc, 1.10 * f_vis)
+                    
+                    pos_l = item.get("pos_local", "En tabla")
+                    pos_v = item.get("pos_visita", "En tabla")
+                    
+                    partidos_analizados.append({
+                        "liga": item.get("liga", "Fútbol Profesional").upper(),
+                        "local": item.get("local", "Local"),
+                        "visitante": item.get("visitante", "Visitante"),
+                        "pos_local": pos_l if "°" in pos_l else f"{pos_l}°",
+                        "pos_visita": pos_v if "°" in pos_v else f"{pos_v}°",
+                        "hora_fecha": f"{fecha_hoy} — {item.get('hora', 'Programado')}",
                         "stats": stats
                     })
-                return partidos
+                return partidos_analizados
         except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                print(f"Límite de frecuencia (429) en Nivel 3. Pausando 25s para refrescar cuota (Intento {intento}/2)...")
-                time.sleep(25)
+            err_msg = str(e)
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                tiempo_espera = 30 * intento
+                print(f"Cuota agotada temporalmente (429). Pausando {tiempo_espera}s para refrescar servidor...")
+                time.sleep(tiempo_espera)
             else:
-                print("Error en Búsqueda Directa Gemini:", e)
+                print(f"Aviso en consulta: {e}")
                 break
-        
+
     return []
-
-def obtener_jornada_completa():
-    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    fecha_clean = fecha_hoy.replace("-", "")
-    print(f"Iniciando consulta de agenda para la fecha {fecha_hoy}...")
-
-    session = requests.Session()
-    session.headers.update(HEADERS_NAVEGADOR)
-    partidos_analizados = []
-
-    # NIVEL 1: ESPN SCOREBOARD
-    url_espn = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={fecha_clean}"
-    try:
-        res = session.get(url_espn, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            eventos = data.get("events", [])
-            
-            for ev in eventos:
-                liga_nom = ev.get("league", {}).get("name", "Fútbol").upper()
-                es_permitida = any(kw in liga_nom for kw in PALABRAS_CLAVE_LIGAS)
-                es_excluida = any(ex in liga_nom for ex in EXCLUSIONES_ESTRICTAS)
-
-                if es_permitida and not es_excluida:
-                    competidores = ev.get("competitions", [{}])[0].get("competitors", [])
-                    if len(competidores) >= 2:
-                        loc = competidores[0].get("team", {}).get("displayName", "Local")
-                        vis = competidores[1].get("team", {}).get("displayName", "Visitante")
-                        hora_str = ev.get("date", "")
-
-                        try:
-                            dt_utc = datetime.fromisoformat(hora_str.replace("Z", "+00:00"))
-                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                            hora_fmt = dt_col.strftime("%Y-%m-%d — %I:%M %p")
-                        except Exception:
-                            hora_fmt = f"{fecha_hoy} — Programado"
-
-                        pos_loc, pos_vis, stats = analizar_partido_con_gemini(loc, vis, liga_nom)
-                        partidos_analizados.append({
-                            "liga": liga_nom,
-                            "local": loc,
-                            "visitante": vis,
-                            "pos_local": pos_loc,
-                            "pos_visita": pos_vis,
-                            "hora_fecha": hora_fmt,
-                            "stats": stats
-                        })
-    except Exception as e:
-        print(f"Aviso Nivel 1 (ESPN): {e}")
-
-    # NIVEL 2: THESPORTSDB CON EXCLUSIÓN ESTRICTA DE JUVENILES
-    if not partidos_analizados:
-        print("Activando Nivel 2: Consulta a TheSportsDB con filtro de categorías mayores...")
-        url_tsdb = f"https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d={fecha_hoy}&s=Soccer"
-        try:
-            res = session.get(url_tsdb, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                eventos = data.get("events", [])
-                if eventos:
-                    for ev in eventos:
-                        liga = ev.get("strLeague", "Fútbol").upper()
-                        es_permitida = any(kw in liga for kw in PALABRAS_CLAVE_LIGAS)
-                        es_excluida = any(ex in liga for ex in EXCLUSIONES_ESTRICTAS)
-
-                        if es_permitida and not es_excluida:
-                            loc = ev.get("strHomeTeam", "Local")
-                            vis = ev.get("strAwayTeam", "Visitante")
-                            hora_str = ev.get("strTime", "00:00:00")
-
-                            pos_loc, pos_vis, stats = analizar_partido_con_gemini(loc, vis, liga)
-                            partidos_analizados.append({
-                                "liga": liga,
-                                "local": loc,
-                                "visitante": vis,
-                                "pos_local": pos_loc,
-                                "pos_visita": pos_vis,
-                                "hora_fecha": f"{fecha_hoy} — {hora_str[:5]}",
-                                "stats": stats
-                            })
-        except Exception as e:
-            print(f"Aviso Nivel 2 (TheSportsDB): {e}")
-
-    # NIVEL 3: BÚSQUEDA WEB DIRECTA CON GEMINI SI NO HAY LIGAS MAYORES EN LAS APIS
-    if not partidos_analizados:
-        partidos_analizados = buscar_agenda_directa_gemini(fecha_hoy)
-
-    return partidos_analizados
 
 # ---------------------------------------------------------
 # 4. DESPACHO DE REPORTES A TELEGRAM
