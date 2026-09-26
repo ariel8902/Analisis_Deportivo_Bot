@@ -8,10 +8,13 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS DESDE SECRETS
+# 1. CONFIGURACIÓN Y CREDENCIALES
 # ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "8650458483:AAFHgr5-yBeYdU3_T153BuSeNC2iSbV1BQ4"
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or "8707489920"
+TOKEN_NUEVO_TELEGRAM = "8650458483:AAFHgr5-yBeYdU3_T153BuSeNC2iSbV1BQ4"
+CHAT_ID_PERSONAL = "8707489920"
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or TOKEN_NUEVO_TELEGRAM
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or CHAT_ID_PERSONAL
 ODDS_API_KEY = os.getenv("ODDS_API_KEY") or "f52fed19ba1071472e5a25c88fa23053"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -277,13 +280,12 @@ def refinamiento_final_gemini(partido, sim_data, base_ia):
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Error: Credenciales de Telegram no configuradas.")
-        return
+    token_uso = TELEGRAM_BOT_TOKEN if TELEGRAM_BOT_TOKEN else TOKEN_NUEVO_TELEGRAM
+    chat_uso = TELEGRAM_CHAT_ID if TELEGRAM_CHAT_ID else CHAT_ID_PERSONAL
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{token_uso}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_uso,
         "text": texto,
         "parse_mode": "HTML"
     }
