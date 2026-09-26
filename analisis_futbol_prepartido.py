@@ -7,38 +7,16 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
-from google import genai
-from google.genai import types
 
 # ---------------------------------------------------------
 # 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0
 NUM_SIMULACIONES_MONTECARLO = 10000
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
-
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-
-# MODELO ÚNICO OFICIAL VALIDADO
-MODELO_OFICIAL = 'gemini-3.8-flash'
-
-# Esquemas Pydantic estructurados
-class PartidoDetalleSchema(BaseModel):
-    liga: str = Field(description="Nombre de la liga o torneo")
-    local: str = Field(description="Equipo local")
-    visitante: str = Field(description="Equipo visitante")
-    hora: str = Field(description="Hora programada de hoy")
-    pos_local: str = Field(description="Puesto en la tabla del local, ej: '3°'")
-    pos_visita: str = Field(description="Puesto en la tabla del visitante, ej: '5°'")
-    factor_ajuste_local: float = Field(description="Factor de fuerza local (1.0 neutro)")
-    factor_ajuste_visitante: float = Field(description="Factor de fuerza visitante (1.0 neutro)")
-
-class JornadaConsolidadaSchema(BaseModel):
-    partidos: list[PartidoDetalleSchema] = Field(description="Lista de partidos oficiales programados para jugar HOY")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + MONTE CARLO)
@@ -157,70 +135,57 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN CON REINTENTO SOBRE GEMINI-3.8-FLASH
+# 3. CONSULTA DE AGENDA DESDE ENDPOINT PÚBLICO
 # ---------------------------------------------------------
 def obtener_jornada_completa():
-    if not client:
-        return []
-
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    print(f"Iniciando consulta de agenda web para la fecha {fecha_hoy}...")
+    print(f"Iniciando consulta de agenda para la fecha {fecha_hoy}...")
 
-    prompt = (
-        f"Investiga en Google Search los partidos de fútbol profesionales que se juegan HOY {fecha_hoy}.\n"
-        f"Incluye la Liga BetPlay Colombia y ligas europeas (Premier League, LaLiga, Serie A, Bundesliga, Ligue 1).\n"
-        f"Para cada partido, extrae las posiciones en la tabla de ambos equipos y evalúa factores de ajuste de fuerza (1.0 neutro).\n"
-        f"Devuelve la agenda completa en formato JSON exacto."
-    )
-
-    max_reintentos = 3
-    for intento in range(1, max_reintentos + 1):
-        try:
-            print(f"Conectando a {MODELO_OFICIAL} (Intento {intento}/{max_reintentos})...")
-            response = client.models.generate_content(
-                model=MODELO_OFICIAL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json",
-                    response_schema=JornadaConsolidadaSchema,
-                )
-            )
-            if response.text:
-                data = json.loads(response.text)
-                partidos_raw = data.get("partidos", [])
-                if partidos_raw:
-                    print(f"¡Éxito! Agenda cargada. Partidos encontrados: {len(partidos_raw)}")
+    # Endpoint deportivo REST público para la jornada del día
+    url_agenda = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={fecha_hoy.replace('-', '')}"
+    req = urllib.request.Request(url_agenda, headers={"User-Agent": "Mozilla/5.0"})
+    
+    partidos_analizados = []
+    try:
+        with urllib.request.urlopen(req, timeout=12) as res:
+            if res.status == 200:
+                data = json.loads(res.read().decode('utf-8'))
+                eventos = data.get("events", [])
+                
+                for ev in eventos:
+                    liga_nom = ev.get("league", {}).get("name", "Fútbol Profesional")
+                    competidores = ev.get("competitions", [{}])[0].get("competitors", [])
                     
-                    partidos_analizados = []
-                    for item in partidos_raw:
-                        lambda_loc_base = 1.40 * float(item.get("factor_ajuste_local", 1.0))
-                        lambda_vis_base = 1.10 * float(item.get("factor_ajuste_visitante", 1.0))
+                    if len(competidores) >= 2:
+                        local_team = competidores[0].get("team", {}).get("shortDisplayName", competidores[0].get("team", {}).get("name", "Local"))
+                        visita_team = competidores[1].get("team", {}).get("shortDisplayName", competidores[1].get("team", {}).get("name", "Visitante"))
                         
-                        stats = evaluar_partido_completo(lambda_loc_base, lambda_vis_base)
+                        pos_loc = competidores[0].get("records", [{}])[0].get("summary", "En tabla")
+                        pos_vis = competidores[1].get("records", [{}])[0].get("summary", "En tabla")
+
+                        stats = evaluar_partido_completo(1.40, 1.10)
                         
-                        hora_fmt = f"{fecha_hoy} — {item.get('hora', 'Hoy')}"
+                        hora_str = ev.get("date", "")
+                        try:
+                            dt_utc = datetime.fromisoformat(hora_str.replace("Z", "+00:00"))
+                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                            hora_fmt = dt_col.strftime("%Y-%m-%d — %I:%M %p")
+                        except Exception:
+                            hora_fmt = f"{fecha_hoy} — Programado"
+
                         partidos_analizados.append({
-                            "liga": item.get("liga", "Fútbol Profesional"),
-                            "local": item.get("local", "Local"),
-                            "visitante": item.get("visitante", "Visitante"),
-                            "pos_local": item.get("pos_local", "En tabla"),
-                            "pos_visita": item.get("pos_visita", "En tabla"),
+                            "liga": liga_nom.upper(),
+                            "local": local_team,
+                            "visitante": visita_team,
+                            "pos_local": pos_loc,
+                            "pos_visita": pos_vis,
                             "hora_fecha": hora_fmt,
                             "stats": stats
                         })
-                    return partidos_analizados
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                tiempo_espera = 15 * intento
-                print(f"Límite de frecuencia (429). Esperando {tiempo_espera}s para reintentar en {MODELO_OFICIAL}...")
-                time.sleep(tiempo_espera)
-            else:
-                print(f"Error en {MODELO_OFICIAL}: {e}")
-                break
+    except Exception as e:
+        print(f"Error consultando la API deportiva: {e}")
 
-    return []
+    return partidos_analizados
 
 # ---------------------------------------------------------
 # 4. DESPACHO DE REPORTES A TELEGRAM
@@ -262,7 +227,7 @@ def enviar_reporte_telegram(partidos):
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
             f"⚔️ **{p['local']} vs {p['visitante']}**\n"
-            f"📌 **Posición en Tabla:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
+            f"📌 **Rendimiento Reciente:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
             f"🕓 `{p['hora_fecha']}`\n\n"
             f"🎯 **OPCIÓN PRINCIPAL DE MAYOR CERTEZA:**\n"
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
