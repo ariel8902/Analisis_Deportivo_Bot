@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS DESDE SECRETS
+# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN_FUTBOL") or os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID_FUTBOL") or os.getenv("TELEGRAM_CHAT_ID")
@@ -89,8 +89,9 @@ def obtener_agenda_betplay_espn():
 
 def obtener_partidos_jornada():
     ahora = datetime.now(ZONA_HORARIA_COLOMBIA)
-    inicio = ahora - timedelta(hours=6)
-    fin = ahora + timedelta(hours=36)
+    # Rango ampliado de 48 horas para capturar la jornada completa sin cortes de zona horaria
+    inicio = ahora - timedelta(hours=12)
+    fin = ahora + timedelta(hours=48)
 
     lista_partidos = []
     tiene_betplay = False
@@ -138,7 +139,7 @@ def obtener_partidos_jornada():
                             "liga": liga["nombre"],
                             "local": local,
                             "visitante": visita,
-                            "fechaHora": dt_col.strftime("%I:%M %p"),
+                            "fechaHora": dt_col.strftime("%d/%m %I:%M %p"),
                             "cuotaLocal": cuota_loc,
                             "cuotaEmpate": cuota_emp,
                             "cuotaVisitante": cuota_vis
@@ -322,7 +323,7 @@ def ejecutar_bot_futbol():
         mensaje = (
             f"🏆 <b>{p['liga']}</b>\n"
             f"⚽ <b>{p['local']} vs {p['visitante']}</b>\n"
-            f"⏰ Hora: <code>{p['fechaHora']} (Hora COL)</code>\n\n"
+            f"⏰ Fecha/Hora: <code>{p['fechaHora']} (Hora COL)</code>\n\n"
             f"📊 <b>Cuotas 1X2:</b> L: <code>{p['cuotaLocal']}</code> | E: <code>{p['cuotaEmpate']}</code> | V: <code>{p['cuotaVisitante']}</code>\n"
             f"🎲 <b>Monte Carlo (10,000 sim):</b> L: <code>{sim['prob_local']}%</code> | Both Score: <code>{sim['prob_btts']}%</code>\n\n"
             f"🔥 <b>PRONÓSTICO PRINCIPAL:</b>\n"
