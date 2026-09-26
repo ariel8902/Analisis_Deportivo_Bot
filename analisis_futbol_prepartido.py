@@ -25,11 +25,14 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 MODELO_OFICIAL = 'gemini-3.8-flash'
 
-# CRITERIOS AMPLIOS DE MATCHING DE LIGAS (CAPTURA TODAS LAS VARIANTES)
+# PALABRAS CLAVE PERMITIDAS
 PALABRAS_CLAVE_LIGAS = [
     "COLOMBIA", "PRIMERA A", "BETPLAY", "LALIGA", "PREMIER", 
-    "SERIE A", "BUNDESLIGA", "LIGUE 1", "CHAMPIONS", "EUROPA", "CONFERENCIA"
+    "SERIE A", "BUNDESLIGA", "LIGUE 1", "CHAMPIONS", "EUROPA LEAGUE"
 ]
+
+# PALABRAS CLAVE EXCLUIDAS (FILTRADO ESTRICTO DE CATEGORÍAS INFERIORES)
+EXCLUSIONES_LIGAS = ["UNDER-21", "U21", "SUB-21", "SUB 21", "UNDER-20", "U20", "WOMEN", "FEMENINO"]
 
 class AjusteFuerzaSchema(BaseModel):
     posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '3°'")
@@ -154,7 +157,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. AGENDA FILTRADA FLEXIBLE + VALIDACIÓN CON GEMINI 3.8-FLASH
+# 3. AGENDA FILTRADA FLEXIBLE + VALIDACIÓN ROBUSTA EN GEMINI
 # ---------------------------------------------------------
 def analizar_partido_con_gemini(local, visitante, liga):
     factor_loc, factor_vis = 1.0, 1.0
@@ -166,29 +169,38 @@ def analizar_partido_con_gemini(local, visitante, liga):
             f"Investiga en Google Search el partido de hoy ({fecha_hoy}): {local} vs {visitante} ({liga}).\n"
             f"Obtén el puesto exacto en la tabla de posiciones de cada equipo y estima el factor de ajuste de fuerza."
         )
-        try:
-            time.sleep(2)
-            response = client.models.generate_content(
-                model=MODELO_OFICIAL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json",
-                    response_schema=AjusteFuerzaSchema,
+        
+        # Bucle de reintento para evitar fallas por rate limit (429)
+        for intento in range(2):
+            try:
+                time.sleep(4)
+                response = client.models.generate_content(
+                    model=MODELO_OFICIAL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        response_mime_type="application/json",
+                        response_schema=AjusteFuerzaSchema,
+                    )
                 )
-            )
-            if response.text:
-                data = json.loads(response.text)
-                factor_loc = float(data.get("factor_ajuste_local", 1.0))
-                factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                pl = str(data.get("posicion_exacta_local", "")).strip()
-                pv = str(data.get("posicion_exacta_visitante", "")).strip()
-                if pl and "DESCONOCIDO" not in pl.upper():
-                    pos_local = pl if "°" in pl else f"{pl}°"
-                if pv and "DESCONOCIDO" not in pv.upper():
-                    pos_visita = pv if "°" in pv else f"{pv}°"
-        except Exception as e:
-            print("Aviso al consultar Gemini 3.8:", e)
+                if response.text:
+                    data = json.loads(response.text)
+                    factor_loc = float(data.get("factor_ajuste_local", 1.0))
+                    factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
+                    pl = str(data.get("posicion_exacta_local", "")).strip()
+                    pv = str(data.get("posicion_exacta_visitante", "")).strip()
+                    if pl and "DESCONOCIDO" not in pl.upper():
+                        pos_local = pl if "°" in pl else f"{pl}°"
+                    if pv and "DESCONOCIDO" not in pv.upper():
+                        pos_visita = pv if "°" in pv else f"{pv}°"
+                    break
+            except Exception as e:
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    print(f"Límite de frecuencia (429) en {local} vs {visitante}. Pausando 10s...")
+                    time.sleep(10)
+                else:
+                    print("Aviso al consultar Gemini:", e)
+                    break
 
     stats = evaluar_partido_completo(1.40 * factor_loc, 1.10 * factor_vis)
     return pos_local, pos_visita, stats
@@ -217,8 +229,11 @@ def obtener_jornada_completa():
                         liga = ev.get("strLeague", "").strip()
                         liga_upper = liga.upper()
                         
-                        # MATCHING FLEXIBLE QUE EVITA DESCARTE DE LIGAS PRINCIPALES
-                        if any(kw in liga_upper for kw in PALABRAS_CLAVE_LIGAS):
+                        # VERIFICACIÓN: INCLUIR PERMITIDAS Y EXCLUIR MENORES
+                        es_permitida = any(kw in liga_upper for kw in PALABRAS_CLAVE_LIGAS)
+                        es_excluida = any(ex in liga_upper for ex in EXCLUSIONES_LIGAS)
+
+                        if es_permitida and not es_excluida:
                             local = ev.get("strHomeTeam", "Local")
                             visitante = ev.get("strAwayTeam", "Visitante")
                             hora_str = ev.get("strTime", "00:00:00")
@@ -266,7 +281,7 @@ def enviar_reporte_telegram(partidos):
         fecha_actual = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
         mensaje = (
             f"🛡️ **REPORTE DE JORNADA - {fecha_actual}**\n\n"
-            f"📊 *No se registran partidos programados en las ligas prioritarias para el día de hoy.*\n\n"
+            f"📊 *No se registran partidos programados en las ligas de primera categoría para el día de hoy.*\n\n"
             f"💡 *El sistema reanudará las simulaciones en la siguiente fecha con agenda activa.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
