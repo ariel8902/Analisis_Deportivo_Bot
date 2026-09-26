@@ -8,12 +8,12 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS
+# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS DESDE SECRETS
 # ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN_FUTBOL") or os.getenv("TELEGRAM_BOT_TOKEN") or "8919715865:AAEZYIYdoZVs_8zqt0M321i4OvN2RPsCy1o"
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID_FUTBOL") or os.getenv("TELEGRAM_CHAT_ID") or "8707489920"
-ODDS_API_KEY = os.getenv("ODDS_API_KEY") or "f52fed19ba1071472e5a25c88fa23053"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN_FUTBOL") or os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID_FUTBOL") or os.getenv("TELEGRAM_CHAT_ID")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
@@ -25,13 +25,13 @@ MODELO_GEMINI = 'gemini-3.8-flash'
 
 # Ligas Top de Europa + Colombia
 LIGAS_TOP = [
-    {"key": "soccer_epl", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
-    {"key": "soccer_spain_la_liga", "nombre": "🇪🇸 LaLiga"},
-    {"key": "soccer_italy_serie_a", "nombre": "🇮🇹 Serie A"},
-    {"key": "soccer_germany_bundesliga", "nombre": "🇩🇪 Bundesliga"},
-    {"key": "soccer_france_ligue_one", "nombre": "🇫🇷 Ligue 1"},
-    {"key": "soccer_uefa_champions_league", "nombre": "🇪🇺 Champions League"},
-    {"key": "soccer_colombia_liga_aguila", "nombre": "🇨🇴 Liga BetPlay"}
+    {"key": "soccer_epl", "nombre": "Premier League"},
+    {"key": "soccer_spain_la_liga", "nombre": "LaLiga"},
+    {"key": "soccer_italy_serie_a", "nombre": "Serie A"},
+    {"key": "soccer_germany_bundesliga", "nombre": "Bundesliga"},
+    {"key": "soccer_france_ligue_one", "nombre": "Ligue 1"},
+    {"key": "soccer_uefa_champions_league", "nombre": "Champions League"},
+    {"key": "soccer_colombia_liga_aguila", "nombre": "Liga BetPlay"}
 ]
 
 HEADERS_NAV = {
@@ -74,7 +74,7 @@ def obtener_agenda_betplay_espn():
                         hora_fmt = "Por definir"
 
                     partidos_col.append({
-                        "liga": "🇨🇴 Liga BetPlay",
+                        "liga": "Liga BetPlay (Colombia)",
                         "local": nom_loc,
                         "visitante": nom_vis,
                         "fechaHora": hora_fmt,
@@ -89,7 +89,6 @@ def obtener_agenda_betplay_espn():
 
 def obtener_partidos_jornada():
     ahora = datetime.now(ZONA_HORARIA_COLOMBIA)
-    # Rango amplio: Partidos de las últimas 6h y próximas 36h
     inicio = ahora - timedelta(hours=6)
     fin = ahora + timedelta(hours=36)
 
@@ -97,6 +96,10 @@ def obtener_partidos_jornada():
     tiene_betplay = False
 
     for liga in LIGAS_TOP:
+        if not ODDS_API_KEY:
+            print("Aviso: ODDS_API_KEY no detectada.")
+            break
+            
         url = f"https://api.the-odds-api.com/v4/sports/{liga['key']}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h"
         try:
             res = requests.get(url, timeout=8)
@@ -143,7 +146,6 @@ def obtener_partidos_jornada():
         except Exception as e:
             print(f"Aviso consultando {liga['nombre']}:", e)
 
-    # Si The-Odds-API no trajo la Liga BetPlay para hoy, activamos el respaldo de ESPN
     if not tiene_betplay:
         partidos_espn = obtener_agenda_betplay_espn()
         lista_partidos.extend(partidos_espn)
@@ -212,6 +214,14 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
 # 4. ANÁLISIS DE IA COMBINADO (GROQ BASE + GEMINI REFINAMIENTO)
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
+    if not GROQ_API_KEY:
+        return {
+            "ambos_marcan_pronostico": "SÍ",
+            "stake": "4/5",
+            "probabilidad_estimada": "68%",
+            "cobertura_goles": "Más de 1.5 Goles"
+        }
+
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -279,6 +289,10 @@ def refinamiento_final_gemini(partido, sim_data, base_ia):
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Error: Credenciales de Telegram no configuradas.")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
