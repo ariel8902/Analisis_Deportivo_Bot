@@ -9,10 +9,10 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES
+# 1. CONFIGURACIÓN Y CREDENCIALES (SEGURO DESDE SECRETS)
 # ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN_FUTBOL", "7981242318:AAGvF_8LpMhJ6_4S_L50x2yR1YvjK8-Zg_M")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID_FUTBOL", "8707489920")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN_FUTBOL")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID_FUTBOL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
@@ -32,7 +32,7 @@ LIGAS_ESPN = {
 }
 
 # ---------------------------------------------------------
-# 2. INGESTA DIRECTA DE AGENDA DESDE ESPN (SIN CUOTAS DE GEMINI)
+# 2. INGESTA DIRECTA DE AGENDA DESDE ESPN (SIN CABECERAS BLOQUEADAS)
 # ---------------------------------------------------------
 def obtener_agenda_espn():
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
@@ -56,13 +56,14 @@ def obtener_agenda_espn():
                         visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
                         
                         if local and visita:
-                            # Filtro estricto para evitar juveniles / Sub-20
                             nom_loc = local["team"]["displayName"]
                             nom_vis = visita["team"]["displayName"]
+                            
+                            # Filtro estricto para evitar juveniles / Sub-20
                             if "sub-" in nom_loc.lower() or "sub-" in nom_vis.lower() or "u20" in nom_loc.lower():
                                 continue
 
-                            # Conversión de hora a Colombia (UTC-5)
+                            # Conversión de hora UTC a Colombia (UTC-5)
                             date_utc_str = ev.get("date", "")
                             try:
                                 dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
@@ -76,7 +77,7 @@ def obtener_agenda_espn():
                                 "local": nom_loc,
                                 "visitante": nom_vis,
                                 "hora": hora_fmt,
-                                "fuerza_loc": random.uniform(1.2, 2.1), # Estimación base
+                                "fuerza_loc": random.uniform(1.2, 2.1),
                                 "fuerza_vis": random.uniform(0.8, 1.6)
                             })
         except Exception as e:
@@ -85,7 +86,7 @@ def obtener_agenda_espn():
     return partidos_hoy
 
 # ---------------------------------------------------------
-# 3. MOTOR MONTE CARLO Y BIVARIATE DIXON-COLES (LOCAL)
+# 3. MOTOR MONTE CARLO Y BIVARIATE DIXON-COLES
 # ---------------------------------------------------------
 def simular_monte_carlo(lambda_loc, lambda_vis, num_sim=10000):
     p_local = 0
@@ -95,11 +96,6 @@ def simular_monte_carlo(lambda_loc, lambda_vis, num_sim=10000):
     p_btts = 0
 
     for _ in range(num_sim):
-        # Simulación de goles por distribución de Poisson
-        goles_loc = 0
-        goles_vis = 0
-        
-        # Generación estocástica de goles
         l_l, l_v = lambda_loc, lambda_vis
         p = math.exp(-l_l)
         g_l = 0
@@ -143,7 +139,7 @@ def simular_monte_carlo(lambda_loc, lambda_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. ENRIQUECIMIENTO CUALITATIVO CON GEMINI (SIN BUSQUEDA WEB HEAVY)
+# 4. ENRIQUECIMIENTO CUALITATIVO CON GEMINI IA
 # ---------------------------------------------------------
 def obtener_analisis_gemini(local, visitante, liga):
     if not client:
@@ -168,6 +164,10 @@ def obtener_analisis_gemini(local, visitante, liga):
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Error: Variables de Telegram no configuradas.")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "Markdown"}).encode('utf-8')
     req = urllib.request.Request(url, data=payload, method='POST')
@@ -196,8 +196,7 @@ def ejecutar_bot_futbol():
         sim = simular_monte_carlo(p["fuerza_loc"], p["fuerza_vis"], NUM_SIMULACIONES)
         analisis_ia = obtener_analisis_gemini(p["local"], p["visitante"], p["liga"])
 
-        # Seleccionar la opción de mayor probabilidad
-         picks = [
+        picks = [
             ("Gana " + p["local"], f"Ganador del partido -> {p['local']}", sim["prob_local"]),
             ("Empate o " + p["local"], f"Doble Oportunidad -> 1X", sim["prob_local"] + sim["prob_empate"]),
             ("Ambos Anotan (Sí)", "Ambos Equipos Marcarán -> Sí", sim["prob_btts"]),
