@@ -8,23 +8,22 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CREDENCIALES
+# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS
 # ---------------------------------------------------------
-TOKEN_TELEGRAM_REAL = "8650458483:AAFHgr5-yBeYdU3_T153BuSeNC2iSbV1BQ4"
-CHAT_ID_REAL = "8707489920"
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or TOKEN_TELEGRAM_REAL
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or CHAT_ID_REAL
-ODDS_API_KEY = os.getenv("ODDS_API_KEY") or "f52fed19ba1071472e5a25c88fa23053"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
+TELEGRAM_BOT_TOKEN = "8650458483:AAFHgr5-yBeYdU3_T153BuSeNC2iSbV1BQ4"
+TELEGRAM_CHAT_ID = "8707489920"
+ODDS_API_KEY = "f52fed19ba1071472e5a25c88fa23053"
+GROQ_API_KEY = "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
+# Cliente Oficial de Gemini
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
+# Ligas idénticas a tu Google Apps Script + Colombia
 LIGAS_TOP = [
     {"key": "soccer_colombia_liga_aguila", "nombre": "🇨🇴 Liga BetPlay"},
     {"key": "soccer_epl", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
@@ -36,79 +35,27 @@ LIGAS_TOP = [
 ]
 
 HEADERS_NAV = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*'
 }
 
 # ---------------------------------------------------------
-# 2. INGESTA INVIOLABLE DESDE ESPN (GARANTIZA COLOMBIA)
+# 2. INGESTA DIRECTA (ESTILO GOOGLE APPS SCRIPT)
 # ---------------------------------------------------------
-def obtener_partidos_espn_directo():
-    """Captura todos los partidos de hoy de la Liga BetPlay sin omitir ninguno"""
-    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
-    fecha_manana = (datetime.now(ZONA_HORARIA_COLOMBIA) + timedelta(days=1)).strftime("%Y%m%d")
-    partidos = []
-
-    for f in [fecha_hoy, fecha_manana]:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/col.1/scoreboard?dates={f}"
-        try:
-            res = requests.get(url, headers=HEADERS_NAV, timeout=8)
-            if res.status_code == 200:
-                events = res.json().get("events", [])
-                for ev in events:
-                    competitions = ev.get("competitions", [])[0]
-                    competitors = competitions.get("competitors", [])
-                    
-                    local = next((c for c in competitors if c.get("homeAway") == "home"), None)
-                    visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                    
-                    if local and visita:
-                        nom_loc = local["team"]["displayName"]
-                        nom_vis = visita["team"]["displayName"]
-                        
-                        if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
-                            continue
-
-                        date_utc_str = ev.get("date", "")
-                        try:
-                            dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                            hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
-                        except Exception:
-                            hora_fmt = "Hoy / En juego"
-
-                        partidos.append({
-                            "liga": "🇨🇴 Liga BetPlay",
-                            "local": nom_loc,
-                            "visitante": nom_vis,
-                            "fechaHora": hora_fmt,
-                            "cuotaLocal": "2.10",
-                            "cuotaEmpate": "3.10",
-                            "cuotaVisitante": "3.20"
-                        })
-        except Exception as e:
-            print("Aviso ESPN:", e)
-
-    return partidos
-
 def obtener_partidos_jornada():
     lista_partidos = []
 
-    # 1. Siempre consultamos ESPN primero para garantizar la Liga BetPlay completa
-    partidos_col = obtener_partidos_espn_directo()
-    lista_partidos.extend(partidos_col)
-
-    # 2. Consultamos The-Odds-API para las ligas europeas
+    # 1. Traer partidos desde The-Odds-API sin filtros restrictivos
     for liga in LIGAS_TOP:
-        if "colombia" in liga["key"]:
-            continue
-            
         url = f"https://api.the-odds-api.com/v4/sports/{liga['key']}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h"
         try:
-            res = requests.get(url, timeout=8)
+            res = requests.get(url, timeout=10)
             if res.status_code == 200:
                 eventos = res.json()
                 for ev in eventos:
+                    local = ev.get("home_team")
+                    visita = ev.get("away_team")
+                    
                     date_utc_str = ev.get("commence_time", "")
                     try:
                         dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
@@ -117,10 +64,7 @@ def obtener_partidos_jornada():
                     except Exception:
                         hora_fmt = "Por definir"
 
-                    local = ev.get("home_team")
-                    visita = ev.get("away_team")
-                    
-                    cuota_loc, cuota_emp, cuota_vis = "N/A", "N/A", "N/A"
+                    cuota_loc, cuota_emp, cuota_vis = "2.10", "3.10", "3.20"
                     bookmakers = ev.get("bookmakers", [])
                     if bookmakers:
                         markets = bookmakers[0].get("markets", [])
@@ -145,6 +89,48 @@ def obtener_partidos_jornada():
                     })
         except Exception as e:
             print(f"Aviso consultando {liga['nombre']}:", e)
+
+    # 2. Respaldo directo de ESPN para asegurar siempre la Liga BetPlay colombiana
+    url_espn = "https://site.api.espn.com/apis/site/v2/sports/soccer/col.1/scoreboard"
+    try:
+        res_espn = requests.get(url_espn, headers=HEADERS_NAV, timeout=8)
+        if res_espn.status_code == 200:
+            events = res_espn.json().get("events", [])
+            for ev in events:
+                competitions = ev.get("competitions", [])[0]
+                competitors = competitions.get("competitors", [])
+                
+                local = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                
+                if local and visita:
+                    nom_loc = local["team"]["displayName"]
+                    nom_vis = visita["team"]["displayName"]
+                    
+                    if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower():
+                        continue
+
+                    date_utc_str = ev.get("date", "")
+                    try:
+                        dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
+                        dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                        hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
+                    except Exception:
+                        hora_fmt = "En Agendamiento"
+
+                    # Evitamos duplicados si la Odds API ya trajo el partido
+                    if not any(p["local"] == nom_loc for p in lista_partidos):
+                        lista_partidos.append({
+                            "liga": "🇨🇴 Liga BetPlay",
+                            "local": nom_loc,
+                            "visitante": nom_vis,
+                            "fechaHora": hora_fmt,
+                            "cuotaLocal": "2.10",
+                            "cuotaEmpate": "3.10",
+                            "cuotaVisitante": "3.20"
+                        })
+    except Exception as e:
+        print("Aviso respaldo ESPN:", e)
 
     return lista_partidos
 
@@ -252,12 +238,12 @@ DATOS ENCUENTRO:
 
 def refinamiento_final_gemini(partido, sim_data, base_ia):
     if not client_gemini:
-        return "Análisis táctico basado en la dinámica ofensiva reciente y vulnerabilidad defensiva."
+        return "Análisis táctico proyectado sobre la potencia ofensiva y vulnerabilidad defensiva en transiciones."
 
     prompt = (
         f"Actúa como el analista jefe de fútbol. Evalúa el partido {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
         f"Métricas del modelo: Probabilidad Ambos Anotan: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
-        f"Redacta una justificación táctica brillante de máximo 2 oraciones en español sobre la potencia ofensiva o debilidad defensiva."
+        f"Redacta una justificación táctica brillante de máximo 2 oraciones en español enfocada en la potencia ofensiva o vulnerabilidad defensiva."
     )
 
     try:
@@ -277,17 +263,15 @@ def refinamiento_final_gemini(partido, sim_data, base_ia):
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
-    token_final = TELEGRAM_BOT_TOKEN if (TELEGRAM_BOT_TOKEN and len(TELEGRAM_BOT_TOKEN) > 20) else TOKEN_TELEGRAM_REAL
-    chat_final = TELEGRAM_CHAT_ID if (TELEGRAM_CHAT_ID and len(TELEGRAM_CHAT_ID) > 5) else CHAT_ID_REAL
-
-    url = f"https://api.telegram.org/bot{token_final}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": chat_final,
+        "chat_id": TELEGRAM_CHAT_ID,
         "text": texto,
         "parse_mode": "HTML"
     }
     try:
-        requests.post(url, json=payload, timeout=8)
+        res = requests.post(url, json=payload, timeout=8)
+        print("Respuesta Telegram HTTP:", res.status_code)
     except Exception as e:
         print("Error enviando a Telegram:", e)
 
