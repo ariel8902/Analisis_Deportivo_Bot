@@ -3,8 +3,7 @@ import math
 import json
 import time
 import random
-import urllib.request
-import urllib.parse
+import requests
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 from google import genai
@@ -31,6 +30,12 @@ PALABRAS_CLAVE_LIGAS = [
 ]
 
 EXCLUSIONES_LIGAS = ["UNDER-21", "U21", "SUB-21", "SUB 21", "UNDER-20", "U20", "WOMEN", "FEMENINO"]
+
+HEADERS_NAVEGADOR = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+}
 
 class AjusteFuerzaSchema(BaseModel):
     posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '3°'")
@@ -155,7 +160,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN DUAL CON RESPALDO MULTIFUENTE
+# 3. EXTRACCIÓN CON LIBRERÍA REQUESTS + GEMINI 3.8
 # ---------------------------------------------------------
 def analizar_partido_con_gemini(local, visitante, liga):
     factor_loc, factor_vis = 1.0, 1.0
@@ -199,87 +204,78 @@ def analizar_partido_con_gemini(local, visitante, liga):
     stats = evaluar_partido_completo(1.40 * factor_loc, 1.10 * factor_vis)
     return pos_local, pos_visita, stats
 
-def consultar_fuente_espn(fecha_str):
-    partidos = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    url_espn = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={fecha_str.replace('-', '')}"
-    req = urllib.request.Request(url_espn, headers=headers)
-    
-    try:
-        with urllib.request.urlopen(req, timeout=10) as res:
-            if res.status == 200:
-                data = json.loads(res.read().decode('utf-8'))
-                eventos = data.get("events", [])
-                for ev in eventos:
-                    liga_nom = ev.get("league", {}).get("name", "Fútbol Profesional").upper()
-                    
-                    es_permitida = any(kw in liga_nom for kw in PALABRAS_CLAVE_LIGAS)
-                    es_excluida = any(ex in liga_nom for ex in EXCLUSIONES_LIGAS)
-                    
-                    if es_permitida and not es_excluida:
-                        competidores = ev.get("competitions", [{}])[0].get("competitors", [])
-                        if len(competidores) >= 2:
-                            loc = competidores[0].get("team", {}).get("displayName", "Local")
-                            vis = competidores[1].get("team", {}).get("displayName", "Visitante")
-                            hora_str = ev.get("date", "")
-                            
-                            try:
-                                dt_utc = datetime.fromisoformat(hora_str.replace("Z", "+00:00"))
-                                dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                                hora_fmt = dt_col.strftime("%Y-%m-%d — %I:%M %p")
-                            except Exception:
-                                hora_fmt = f"{fecha_str} — Programado"
-                                
-                            pos_loc, pos_vis, stats = analizar_partido_con_gemini(loc, vis, liga_nom)
-                            partidos.append({
-                                "liga": liga_nom,
-                                "local": loc,
-                                "visitante": vis,
-                                "pos_local": pos_loc,
-                                "pos_visita": pos_vis,
-                                "hora_fecha": hora_fmt,
-                                "stats": stats
-                            })
-    except Exception as e:
-        print("Error en fuente de respaldo ESPN:", e)
-        
-    return partidos
-
 def obtener_jornada_completa():
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
+    fecha_clean = fecha_hoy.replace("-", "")
     print(f"Iniciando consulta de agenda para la fecha {fecha_hoy}...")
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "application/json"
-    }
-
-    url_tsdb = f"https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d={fecha_hoy}&s=Soccer"
-    req = urllib.request.Request(url_tsdb, headers=headers)
-    
+    session = requests.Session()
+    session.headers.update(HEADERS_NAVEGADOR)
     partidos_analizados = []
+
+    # API PRINCIPAL (ESP-API ESTRUCTURADA VIA REQUESTS)
+    url_espn = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={fecha_clean}"
     try:
-        with urllib.request.urlopen(req, timeout=10) as res:
-            if res.status == 200:
-                data = json.loads(res.read().decode('utf-8'))
+        res = session.get(url_espn, timeout=12)
+        if res.status_code == 200:
+            data = res.json()
+            eventos = data.get("events", [])
+            for ev in eventos:
+                liga_nom = ev.get("league", {}).get("name", "Fútbol Profesional").upper()
+                es_permitida = any(kw in liga_nom for kw in PALABRAS_CLAVE_LIGAS)
+                es_excluida = any(ex in liga_nom for ex in EXCLUSIONES_LIGAS)
+
+                if es_permitida and not es_excluida:
+                    competidores = ev.get("competitions", [{}])[0].get("competitors", [])
+                    if len(competidores) >= 2:
+                        loc = competidores[0].get("team", {}).get("displayName", "Local")
+                        vis = competidores[1].get("team", {}).get("displayName", "Visitante")
+                        hora_str = ev.get("date", "")
+
+                        try:
+                            dt_utc = datetime.fromisoformat(hora_str.replace("Z", "+00:00"))
+                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                            hora_fmt = dt_col.strftime("%Y-%m-%d — %I:%M %p")
+                        except Exception:
+                            hora_fmt = f"{fecha_hoy} — Programado"
+
+                        pos_loc, pos_vis, stats = analizar_partido_con_gemini(loc, vis, liga_nom)
+                        partidos_analizados.append({
+                            "liga": liga_nom,
+                            "local": loc,
+                            "visitante": vis,
+                            "pos_local": pos_loc,
+                            "pos_visita": pos_vis,
+                            "hora_fecha": hora_fmt,
+                            "stats": stats
+                        })
+    except Exception as e:
+        print(f"Aviso consultando fuente principal: {e}")
+
+    # SI NO SE ENCONTRARON EVENTOS, SE ACTIVA FUENTE DE RESPALDO (THESPORTSDB)
+    if not partidos_analizados:
+        print("Activando fuente de respaldo para la cartelera de hoy...")
+        url_tsdb = f"https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d={fecha_hoy}&s=Soccer"
+        try:
+            res = session.get(url_tsdb, timeout=12)
+            if res.status_code == 200:
+                data = res.json()
                 eventos = data.get("events", [])
                 if eventos:
                     for ev in eventos:
-                        liga = ev.get("strLeague", "").strip()
-                        liga_upper = liga.upper()
-                        
-                        es_permitida = any(kw in liga_upper for kw in PALABRAS_CLAVE_LIGAS)
-                        es_excluida = any(ex in liga_upper for ex in EXCLUSIONES_LIGAS)
+                        liga = ev.get("strLeague", "").strip().upper()
+                        es_permitida = any(kw in liga for kw in PALABRAS_CLAVE_LIGAS)
+                        es_excluida = any(ex in liga for ex in EXCLUSIONES_LIGAS)
 
                         if es_permitida and not es_excluida:
                             local = ev.get("strHomeTeam", "Local")
                             visitante = ev.get("strAwayTeam", "Visitante")
                             hora_str = ev.get("strTime", "00:00:00")
-                            
+
                             pos_loc, pos_vis, stats = analizar_partido_con_gemini(local, visitante, liga)
                             hora_fmt = f"{fecha_hoy} — {hora_str[:5]}"
                             partidos_analizados.append({
-                                "liga": liga_upper,
+                                "liga": liga,
                                 "local": local,
                                 "visitante": visitante,
                                 "pos_local": pos_loc,
@@ -287,13 +283,8 @@ def obtener_jornada_completa():
                                 "hora_fecha": hora_fmt,
                                 "stats": stats
                             })
-    except Exception as e:
-        print("Aviso en fuente primaria TheSportsDB:", e)
-
-    # SI LA FUENTE PRIMARIA NO RETORNA PARTIDOS, SE ACTIVA EL RESPALDO DUAL
-    if not partidos_analizados:
-        print("Activando fuente de respaldo para verificar la cartelera de hoy...")
-        partidos_analizados = consultar_fuente_espn(fecha_hoy)
+        except Exception as e:
+            print(f"Error consultando fuente de respaldo: {e}")
 
     return partidos_analizados
 
@@ -302,15 +293,14 @@ def obtener_jornada_completa():
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode({
+    payload = {
         "chat_id": chat_id, 
         "text": texto, 
         "parse_mode": "Markdown"
-    }).encode('utf-8')
-    req = urllib.request.Request(url, data=payload, method='POST')
+    }
     try:
-        with urllib.request.urlopen(req, timeout=10) as res:
-            print("Reporte despachado a Telegram. Código HTTP:", res.status)
+        res = requests.post(url, data=payload, timeout=10)
+        print("Reporte despachado a Telegram. Código HTTP:", res.status_code)
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
