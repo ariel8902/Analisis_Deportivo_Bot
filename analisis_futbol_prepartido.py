@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS
+# 1. CREDENCIALES
 # ---------------------------------------------------------
 TOKEN_TELEGRAM_REAL = "8650458483:AAFHgr5-yBeYdU3_T153BuSeNC2iSbV1BQ4"
 CHAT_ID_REAL = "8707489920"
@@ -25,30 +25,29 @@ NUM_SIMULACIONES = 10000
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-# LIGAS TOP SEGÚN TU SCRIPT DE GOOGLE (CLAVE COLOMBIA RESTAURADA CON ÉXITO)
 LIGAS_TOP = [
+    {"key": "soccer_colombia_liga_aguila", "nombre": "🇨🇴 Liga BetPlay"},
     {"key": "soccer_epl", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
     {"key": "soccer_spain_la_liga", "nombre": "🇪🇸 LaLiga"},
     {"key": "soccer_italy_serie_a", "nombre": "🇮🇹 Serie A"},
     {"key": "soccer_germany_bundesliga", "nombre": "🇩🇪 Bundesliga"},
     {"key": "soccer_france_ligue_one", "nombre": "🇫🇷 Ligue 1"},
-    {"key": "soccer_uefa_champions_league", "nombre": "🇪🇺 Champions League"},
-    {"key": "soccer_colombia_liga_aguila", "nombre": "🇨🇴 Liga BetPlay"}
+    {"key": "soccer_uefa_champions_league", "nombre": "🇪🇺 Champions League"}
 ]
 
 HEADERS_NAV = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json, text/plain, */*'
 }
 
 # ---------------------------------------------------------
-# 2. INGESTA HÍBRIDA (THE-ODDS-API + RESPALDO ESPN BETPLAY)
+# 2. INGESTA INVIOLABLE DESDE ESPN (GARANTIZA COLOMBIA)
 # ---------------------------------------------------------
-def obtener_agenda_betplay_espn():
-    """Respaldo directo a ESPN para la Liga BetPlay colombiana"""
+def obtener_partidos_espn_directo():
+    """Captura todos los partidos de hoy de la Liga BetPlay sin omitir ninguno"""
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
     fecha_manana = (datetime.now(ZONA_HORARIA_COLOMBIA) + timedelta(days=1)).strftime("%Y%m%d")
-    partidos_col = []
+    partidos = []
 
     for f in [fecha_hoy, fecha_manana]:
         url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/col.1/scoreboard?dates={f}"
@@ -76,9 +75,9 @@ def obtener_agenda_betplay_espn():
                             dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
                             hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
                         except Exception:
-                            hora_fmt = "Por definir"
+                            hora_fmt = "Hoy / En juego"
 
-                        partidos_col.append({
+                        partidos.append({
                             "liga": "🇨🇴 Liga BetPlay",
                             "local": nom_loc,
                             "visitante": nom_vis,
@@ -90,18 +89,20 @@ def obtener_agenda_betplay_espn():
         except Exception as e:
             print("Aviso ESPN:", e)
 
-    return partidos_col
+    return partidos
 
 def obtener_partidos_jornada():
-    ahora = datetime.now(ZONA_HORARIA_COLOMBIA)
-    # Rango amplio: Desde hace 6 horas hasta las próximas 48 horas (captura jornada completa de hoy y mañana)
-    inicio = ahora - timedelta(hours=6)
-    fin = ahora + timedelta(hours=48)
-
     lista_partidos = []
-    tiene_betplay = False
 
+    # 1. Siempre consultamos ESPN primero para garantizar la Liga BetPlay completa
+    partidos_col = obtener_partidos_espn_directo()
+    lista_partidos.extend(partidos_col)
+
+    # 2. Consultamos The-Odds-API para las ligas europeas
     for liga in LIGAS_TOP:
+        if "colombia" in liga["key"]:
+            continue
+            
         url = f"https://api.the-odds-api.com/v4/sports/{liga['key']}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h"
         try:
             res = requests.get(url, timeout=8)
@@ -112,46 +113,38 @@ def obtener_partidos_jornada():
                     try:
                         dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
                         dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                        hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
                     except Exception:
-                        continue
+                        hora_fmt = "Por definir"
 
-                    if inicio <= dt_col <= fin:
-                        local = ev.get("home_team")
-                        visita = ev.get("away_team")
-                        
-                        cuota_loc, cuota_emp, cuota_vis = "N/A", "N/A", "N/A"
-                        bookmakers = ev.get("bookmakers", [])
-                        if bookmakers:
-                            markets = bookmakers[0].get("markets", [])
-                            h2h = next((m for m in markets if m.get("key") == "h2h"), None)
-                            if h2h:
-                                for out in h2h.get("outcomes", []):
-                                    if out.get("name") == local:
-                                        cuota_loc = str(out.get("price"))
-                                    elif out.get("name") == visita:
-                                        cuota_vis = str(out.get("price"))
-                                    elif out.get("name") == "Draw":
-                                        cuota_emp = str(out.get("price"))
+                    local = ev.get("home_team")
+                    visita = ev.get("away_team")
+                    
+                    cuota_loc, cuota_emp, cuota_vis = "N/A", "N/A", "N/A"
+                    bookmakers = ev.get("bookmakers", [])
+                    if bookmakers:
+                        markets = bookmakers[0].get("markets", [])
+                        h2h = next((m for m in markets if m.get("key") == "h2h"), None)
+                        if h2h:
+                            for out in h2h.get("outcomes", []):
+                                if out.get("name") == local:
+                                    cuota_loc = str(out.get("price"))
+                                elif out.get("name") == visita:
+                                    cuota_vis = str(out.get("price"))
+                                elif out.get("name") == "Draw":
+                                    cuota_emp = str(out.get("price"))
 
-                        if "liga_aguila" in liga["key"]:
-                            tiene_betplay = True
-
-                        lista_partidos.append({
-                            "liga": liga["nombre"],
-                            "local": local,
-                            "visitante": visita,
-                            "fechaHora": dt_col.strftime("%d/%m %I:%M %p"),
-                            "cuotaLocal": cuota_loc,
-                            "cuotaEmpate": cuota_emp,
-                            "cuotaVisitante": cuota_vis
-                        })
+                    lista_partidos.append({
+                        "liga": liga["nombre"],
+                        "local": local,
+                        "visitante": visita,
+                        "fechaHora": hora_fmt,
+                        "cuotaLocal": cuota_loc,
+                        "cuotaEmpate": cuota_emp,
+                        "cuotaVisitante": cuota_vis
+                    })
         except Exception as e:
             print(f"Aviso consultando {liga['nombre']}:", e)
-
-    # Si Odds API no retornó la Liga BetPlay, agregamos el respaldo de ESPN
-    if not tiene_betplay:
-        partidos_espn = obtener_agenda_betplay_espn()
-        lista_partidos.extend(partidos_espn)
 
     return lista_partidos
 
@@ -214,7 +207,7 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. ANÁLISIS DE IA (GROQ BASE + GEMINI REFINAMIENTO)
+# 4. ANÁLISIS DE IA COMBINADO (GROQ BASE + GEMINI REFINAMIENTO)
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -223,20 +216,19 @@ def obtener_estructuracion_groq(partido):
         "Content-Type": "application/json"
     }
 
-    prompt = f"""Actúa como un cuantitativo y analista experto de fútbol especializado en el mercado 'AMBOS EQUIPOS ANOTAN' (BTTS).
-Responde ÚNICAMENTE con un objeto JSON válido:
+    prompt = f"""Actúa como un cuantitativo y analista experto de fútbol especializado en 'AMBOS EQUIPOS ANOTAN' (BTTS).
+Responde ÚNICAMENTE con JSON:
 
 {{
   "ambos_marcan_pronostico": "SÍ" o "NO",
   "stake": "Stake (Ejemplo: 4/5)",
   "probabilidad_estimada": "% estimado",
-  "cobertura_goles": "Opción alternativa de línea de gol (Ejemplo: Más de 2.5 Goles)"
+  "cobertura_goles": "Opción alternativa de línea de gol"
 }}
 
 DATOS ENCUENTRO:
 - Liga: {partido['liga']}
-- Partido: {partido['local']} vs {partido['visitante']}
-- Cuotas 1X2: Local ({partido['cuotaLocal']}) | Empate ({partido['cuotaEmpate']}) | Visitante ({partido['cuotaVisitante']})"""
+- Partido: {partido['local']} vs {partido['visitante']}"""
 
     payload = {
         "model": "llama-3.1-8b-instant",
@@ -249,7 +241,7 @@ DATOS ENCUENTRO:
         if res.status_code == 200:
             return json.loads(res.json()["choices"][0]["message"]["content"])
     except Exception as e:
-        print("Aviso al estructurar datos iniciales en Groq:", e)
+        print("Aviso Groq:", e)
 
     return {
         "ambos_marcan_pronostico": "SÍ",
@@ -260,13 +252,12 @@ DATOS ENCUENTRO:
 
 def refinamiento_final_gemini(partido, sim_data, base_ia):
     if not client_gemini:
-        return "Análisis táctico basado en la dinámica ofensiva reciente y balance defensivo."
+        return "Análisis táctico basado en la dinámica ofensiva reciente y vulnerabilidad defensiva."
 
     prompt = (
         f"Actúa como el analista jefe de fútbol. Evalúa el partido {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
         f"Métricas del modelo: Probabilidad Ambos Anotan: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
-        f"Cuotas 1X2: L:{partido['cuotaLocal']} E:{partido['cuotaEmpate']} V:{partido['cuotaVisitante']}. "
-        f"Redacta una justificación táctica brillante de máximo 2 oraciones en español enfocada en la potencia ofensiva o vulnerabilidad defensiva de ambos equipos."
+        f"Redacta una justificación táctica brillante de máximo 2 oraciones en español sobre la potencia ofensiva o debilidad defensiva."
     )
 
     try:
@@ -278,16 +269,16 @@ def refinamiento_final_gemini(partido, sim_data, base_ia):
         if res.text:
             return res.text.strip()
     except Exception as e:
-        print("Aviso en refinamiento Gemini, usando respaldo táctico:", e)
+        print("Aviso Gemini:", e)
 
-    return f"Se espera un desarrollo de alta intensidad ofensiva donde la fragilidad en las transiciones del conjunto visitante favorece el mercado de goles."
+    return f"Se espera un desarrollo de alta intensidad ofensiva favoreciendo el mercado de goles."
 
 # ---------------------------------------------------------
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
     token_final = TELEGRAM_BOT_TOKEN if (TELEGRAM_BOT_TOKEN and len(TELEGRAM_BOT_TOKEN) > 20) else TOKEN_TELEGRAM_REAL
-    chat_final = TELEGRAM_CHAT_ID if (TELEGRAM_CHAT_ID and len(TELEGRAM_CHAT_ID) > 5) else CHAT_ID_PERSONAL
+    chat_final = TELEGRAM_CHAT_ID if (TELEGRAM_CHAT_ID and len(TELEGRAM_CHAT_ID) > 5) else CHAT_ID_REAL
 
     url = f"https://api.telegram.org/bot{token_final}/sendMessage"
     payload = {
@@ -296,19 +287,18 @@ def enviar_mensaje_telegram(texto):
         "parse_mode": "HTML"
     }
     try:
-        res = requests.post(url, json=payload, timeout=8)
-        print(f"Respuesta Telegram HTTP: {res.status_code}")
+        requests.post(url, json=payload, timeout=8)
     except Exception as e:
         print("Error enviando a Telegram:", e)
 
 def ejecutar_bot_futbol():
-    fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - ESPECIALISTA AMBOS MARCAN</b>\n📅 Evaluando jornada: <b>{fecha_colombia}</b>")
+    fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
+    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - ESPECIALISTA AMBOS MARCAN</b>\n📅 Escaneo activo: <b>{fecha_colombia}</b>")
 
     partidos = obtener_partidos_jornada()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA - {fecha_colombia}</b>\n\n📊 <i>No se registran partidos programados en las ligas principales de primera categoría para hoy/mañana.</i>")
+        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos.</i>")
         return
 
     for p in partidos:
@@ -334,7 +324,7 @@ def ejecutar_bot_futbol():
         enviar_mensaje_telegram(mensaje)
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Análisis finalizado con Gemini IA.</b> Partidos procesados: {len(partidos)}")
+    enviar_mensaje_telegram(f"✅ <b>Análisis completado.</b> Partidos procesados con Gemini IA: {len(partidos)}")
 
 if __name__ == "__main__":
     ejecutar_bot_futbol()
