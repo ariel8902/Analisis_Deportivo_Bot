@@ -25,13 +25,11 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 MODELO_OFICIAL = 'gemini-3.8-flash'
 
-# PALABRAS CLAVE PERMITIDAS
 PALABRAS_CLAVE_LIGAS = [
     "COLOMBIA", "PRIMERA A", "BETPLAY", "LALIGA", "PREMIER", 
-    "SERIE A", "BUNDESLIGA", "LIGUE 1", "CHAMPIONS", "EUROPA LEAGUE"
+    "SERIE A", "BUNDESLIGA", "LIGUE 1", "CHAMPIONS", "EUROPA"
 ]
 
-# PALABRAS CLAVE EXCLUIDAS (FILTRADO ESTRICTO DE CATEGORÍAS INFERIORES)
 EXCLUSIONES_LIGAS = ["UNDER-21", "U21", "SUB-21", "SUB 21", "UNDER-20", "U20", "WOMEN", "FEMENINO"]
 
 class AjusteFuerzaSchema(BaseModel):
@@ -157,7 +155,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. AGENDA FILTRADA FLEXIBLE + VALIDACIÓN ROBUSTA EN GEMINI
+# 3. EXTRACCIÓN DUAL CON RESPALDO MULTIFUENTE
 # ---------------------------------------------------------
 def analizar_partido_con_gemini(local, visitante, liga):
     factor_loc, factor_vis = 1.0, 1.0
@@ -169,11 +167,9 @@ def analizar_partido_con_gemini(local, visitante, liga):
             f"Investiga en Google Search el partido de hoy ({fecha_hoy}): {local} vs {visitante} ({liga}).\n"
             f"Obtén el puesto exacto en la tabla de posiciones de cada equipo y estima el factor de ajuste de fuerza."
         )
-        
-        # Bucle de reintento para evitar fallas por rate limit (429)
         for intento in range(2):
             try:
-                time.sleep(4)
+                time.sleep(3)
                 response = client.models.generate_content(
                     model=MODELO_OFICIAL,
                     contents=prompt,
@@ -196,21 +192,65 @@ def analizar_partido_con_gemini(local, visitante, liga):
                     break
             except Exception as e:
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    print(f"Límite de frecuencia (429) en {local} vs {visitante}. Pausando 10s...")
-                    time.sleep(10)
+                    time.sleep(8)
                 else:
-                    print("Aviso al consultar Gemini:", e)
                     break
 
     stats = evaluar_partido_completo(1.40 * factor_loc, 1.10 * factor_vis)
     return pos_local, pos_visita, stats
+
+def consultar_fuente_espn(fecha_str):
+    partidos = []
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    url_espn = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={fecha_str.replace('-', '')}"
+    req = urllib.request.Request(url_espn, headers=headers)
+    
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            if res.status == 200:
+                data = json.loads(res.read().decode('utf-8'))
+                eventos = data.get("events", [])
+                for ev in eventos:
+                    liga_nom = ev.get("league", {}).get("name", "Fútbol Profesional").upper()
+                    
+                    es_permitida = any(kw in liga_nom for kw in PALABRAS_CLAVE_LIGAS)
+                    es_excluida = any(ex in liga_nom for ex in EXCLUSIONES_LIGAS)
+                    
+                    if es_permitida and not es_excluida:
+                        competidores = ev.get("competitions", [{}])[0].get("competitors", [])
+                        if len(competidores) >= 2:
+                            loc = competidores[0].get("team", {}).get("displayName", "Local")
+                            vis = competidores[1].get("team", {}).get("displayName", "Visitante")
+                            hora_str = ev.get("date", "")
+                            
+                            try:
+                                dt_utc = datetime.fromisoformat(hora_str.replace("Z", "+00:00"))
+                                dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                                hora_fmt = dt_col.strftime("%Y-%m-%d — %I:%M %p")
+                            except Exception:
+                                hora_fmt = f"{fecha_str} — Programado"
+                                
+                            pos_loc, pos_vis, stats = analizar_partido_con_gemini(loc, vis, liga_nom)
+                            partidos.append({
+                                "liga": liga_nom,
+                                "local": loc,
+                                "visitante": vis,
+                                "pos_local": pos_loc,
+                                "pos_visita": pos_vis,
+                                "hora_fecha": hora_fmt,
+                                "stats": stats
+                            })
+    except Exception as e:
+        print("Error en fuente de respaldo ESPN:", e)
+        
+    return partidos
 
 def obtener_jornada_completa():
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
     print(f"Iniciando consulta de agenda para la fecha {fecha_hoy}...")
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Accept": "application/json"
     }
 
@@ -219,17 +259,15 @@ def obtener_jornada_completa():
     
     partidos_analizados = []
     try:
-        with urllib.request.urlopen(req, timeout=12) as res:
+        with urllib.request.urlopen(req, timeout=10) as res:
             if res.status == 200:
                 data = json.loads(res.read().decode('utf-8'))
                 eventos = data.get("events", [])
-                
                 if eventos:
                     for ev in eventos:
                         liga = ev.get("strLeague", "").strip()
                         liga_upper = liga.upper()
                         
-                        # VERIFICACIÓN: INCLUIR PERMITIDAS Y EXCLUIR MENORES
                         es_permitida = any(kw in liga_upper for kw in PALABRAS_CLAVE_LIGAS)
                         es_excluida = any(ex in liga_upper for ex in EXCLUSIONES_LIGAS)
 
@@ -239,7 +277,6 @@ def obtener_jornada_completa():
                             hora_str = ev.get("strTime", "00:00:00")
                             
                             pos_loc, pos_vis, stats = analizar_partido_con_gemini(local, visitante, liga)
-                            
                             hora_fmt = f"{fecha_hoy} — {hora_str[:5]}"
                             partidos_analizados.append({
                                 "liga": liga_upper,
@@ -251,7 +288,12 @@ def obtener_jornada_completa():
                                 "stats": stats
                             })
     except Exception as e:
-        print(f"Error consultando la API de eventos: {e}")
+        print("Aviso en fuente primaria TheSportsDB:", e)
+
+    # SI LA FUENTE PRIMARIA NO RETORNA PARTIDOS, SE ACTIVA EL RESPALDO DUAL
+    if not partidos_analizados:
+        print("Activando fuente de respaldo para verificar la cartelera de hoy...")
+        partidos_analizados = consultar_fuente_espn(fecha_hoy)
 
     return partidos_analizados
 
