@@ -23,7 +23,8 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-MODELO_ESTABLE = 'gemini-2.5-flash'
+# SECUENCIA RIGUROSA DE RESPALDO DE MODELOS (EVITA ERRORES 404 DE ENPOINT)
+MODELOS_CANDIDATOS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']
 
 # Esquemas Pydantic estructurados
 class PartidoDetalleSchema(BaseModel):
@@ -33,11 +34,11 @@ class PartidoDetalleSchema(BaseModel):
     hora: str = Field(description="Hora programada de hoy")
     pos_local: str = Field(description="Puesto en la tabla del local, ej: '3°'")
     pos_visita: str = Field(description="Puesto en la tabla del visitante, ej: '5°'")
-    factor_ajuste_local: float = Field(description="Factor de fuerza local (1.0 neutro, 1.2 fuerte, 0.8 débil)")
-    factor_ajuste_visitante: float = Field(description="Factor de fuerza visitante (1.0 neutro, 1.2 fuerte, 0.8 débil)")
+    factor_ajuste_local: float = Field(description="Factor de fuerza local (1.0 neutro)")
+    factor_ajuste_visitante: float = Field(description="Factor de fuerza visitante (1.0 neutro)")
 
 class JornadaConsolidadaSchema(BaseModel):
-    partidos: list[PartidoDetalleSchema] = Field(description="Lista de partidos de fútbol profesionales que se juegan HOY con sus datos")
+    partidos: list[PartidoDetalleSchema] = Field(description="Lista de partidos oficiales programados para jugar HOY")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + MONTE CARLO)
@@ -156,57 +157,66 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. CONSOLIDACIÓN EN 1 SOLA PETICIÓN DE BÚSQUEDA WEB
+# 3. EXTRACCIÓN CON RECORRIDO DE MODELOS CANDIDATOS
 # ---------------------------------------------------------
 def obtener_jornada_completa():
     if not client:
         return []
 
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    print(f"Iniciando consulta única de búsqueda web para el día {fecha_hoy}...")
+    print(f"Iniciando consulta de agenda web para la fecha {fecha_hoy}...")
 
     prompt = (
-        f"Busca en Google Search todos los partidos de fútbol profesionales programados para HOY {fecha_hoy}.\n"
-        f"Incluye partidos de la Liga BetPlay Colombia y ligas europeas (Premier League, LaLiga, Serie A, Bundesliga, Ligue 1).\n"
-        f"Para cada partido encontrado, investiga la posición actual en la tabla de ambos equipos y estima un factor de ajuste de fuerza (1.0 neutro).\n"
-        f"Devuelve la información consolidada en un solo objeto JSON."
+        f"Investiga en Google Search los partidos de fútbol profesionales que se juegan HOY {fecha_hoy}.\n"
+        f"Incluye la Liga BetPlay Colombia y ligas europeas (Premier League, LaLiga, Serie A, Bundesliga, Ligue 1).\n"
+        f"Para cada partido, extrae las posiciones en la tabla de ambos equipos y evalúa factores de ajuste de fuerza (1.0 neutro).\n"
+        f"Devuelve la agenda completa en formato JSON exacto."
     )
 
-    try:
-        response = client.models.generate_content(
-            model=MODELO_ESTABLE,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                response_mime_type="application/json",
-                response_schema=JornadaConsolidadaSchema,
+    for modelo in MODELOS_CANDIDATOS:
+        try:
+            print(f"Probando conexión con modelo: {modelo}...")
+            response = client.models.generate_content(
+                model=modelo,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    response_mime_type="application/json",
+                    response_schema=JornadaConsolidadaSchema,
+                )
             )
-        )
-        if response.text:
-            data = json.loads(response.text)
-            partidos_raw = data.get("partidos", [])
-            print(f"Consulta exitosa. Se extrajeron {len(partidos_raw)} partidos de la web.")
-            
-            partidos_analizados = []
-            for item in partidos_raw:
-                lambda_loc_base = 1.40 * float(item.get("factor_ajuste_local", 1.0))
-                lambda_vis_base = 1.10 * float(item.get("factor_ajuste_visitante", 1.0))
-                
-                stats = evaluar_partido_completo(lambda_loc_base, lambda_vis_base)
-                
-                hora_fmt = f"{fecha_hoy} — {item.get('hora', 'Hoy')}"
-                partidos_analizados.append({
-                    "liga": item.get("liga", "Fútbol Profesional"),
-                    "local": item.get("local", "Local"),
-                    "visitante": item.get("visitante", "Visitante"),
-                    "pos_local": item.get("pos_local", "En tabla"),
-                    "pos_visita": item.get("pos_visita", "En tabla"),
-                    "hora_fecha": hora_fmt,
-                    "stats": stats
-                })
-            return partidos_analizados
-    except Exception as e:
-        print(f"Error en la consulta única a la API: {e}")
+            if response.text:
+                data = json.loads(response.text)
+                partidos_raw = data.get("partidos", [])
+                if partidos_raw:
+                    print(f"¡Éxito! Agenda cargada desde {modelo}. Partidos encontrados: {len(partidos_raw)}")
+                    
+                    partidos_analizados = []
+                    for item in partidos_raw:
+                        lambda_loc_base = 1.40 * float(item.get("factor_ajuste_local", 1.0))
+                        lambda_vis_base = 1.10 * float(item.get("factor_ajuste_visitante", 1.0))
+                        
+                        stats = evaluar_partido_completo(lambda_loc_base, lambda_vis_base)
+                        
+                        hora_fmt = f"{fecha_hoy} — {item.get('hora', 'Hoy')}"
+                        partidos_analizados.append({
+                            "liga": item.get("liga", "Fútbol Profesional"),
+                            "local": item.get("local", "Local"),
+                            "visitante": item.get("visitante", "Visitante"),
+                            "pos_local": item.get("pos_local", "En tabla"),
+                            "pos_visita": item.get("pos_visita", "En tabla"),
+                            "hora_fecha": hora_fmt,
+                            "stats": stats
+                        })
+                    return partidos_analizados
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                print(f"Aviso en {modelo}: Límite de frecuencia (429). Pausando 8 segundos para reintentar...")
+                time.sleep(8)
+            else:
+                print(f"Aviso en {modelo}: {e}. Evaluando siguiente candidato...")
+            continue
 
     return []
 
