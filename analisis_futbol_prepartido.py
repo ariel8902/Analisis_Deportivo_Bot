@@ -5,7 +5,7 @@ import time
 import random
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
@@ -19,28 +19,37 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0  # Umbral de certeza del 70%
 NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
+ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 # Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Esquema Pydantic para la extracción estricta de factores numéricos y posiciones reales
-class AnalisisPartidoDinamicoSchema(BaseModel):
-    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '17°' o '17° (8 pts)'")
-    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '15°' o '15° (8 pts)'")
-    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local tras analizar noticias en vivo (1.0 neutro)")
-    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante tras analizar noticias en vivo (1.0 neutro)")
+# Esquema para la agenda dinámica del día
+class PartidoAgendaSchema(BaseModel):
+    liga: str = Field(description="Nombre de la liga o torneo")
+    local: str = Field(description="Nombre del equipo local")
+    visitante: str = Field(description="Nombre del equipo visitante")
+    hora: str = Field(description="Hora programada del partido (ej. '04:00 PM')")
+
+class AgendaDiariaSchema(BaseModel):
+    partidos: list[PartidoAgendaSchema] = Field(description="Lista de partidos oficiales programados para jugar HOY")
+
+# Esquema para extracción de posiciones y fuerza
+class AjusteFuerzaSchema(BaseModel):
+    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '17°'")
+    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '15°'")
+    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local (1.0 neutro)")
+    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante (1.0 neutro)")
 
 # ---------------------------------------------------------
-# 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + xG + MONTE CARLO)
+# 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + MONTE CARLO)
 # ---------------------------------------------------------
 def poisson_pmf(k, lambda_param):
-    """Calcula la función de masa de probabilidad de Poisson pura."""
     if lambda_param <= 0:
         return 1.0 if k == 0 else 0.0
     return (lambda_param ** k) * math.exp(-lambda_param) / math.factorial(k)
 
 def factor_dixon_coles(x, y, lambda_loc, lambda_vis, rho=-0.11):
-    """Factor de corrección tau de Dixon & Coles (1997)."""
     if x == 0 and y == 0:
         return 1.0 - (lambda_loc * lambda_vis * rho)
     elif x == 1 and y == 0:
@@ -53,7 +62,6 @@ def factor_dixon_coles(x, y, lambda_loc, lambda_vis, rho=-0.11):
         return 1.0
 
 def generar_matriz_dixon_coles(lambda_loc, lambda_vis, max_goles=6):
-    """Construye la matriz conjunta de densidad de probabilidad teórica."""
     matriz = {}
     for i in range(max_goles + 1):
         p_i = poisson_pmf(i, lambda_loc)
@@ -64,9 +72,6 @@ def generar_matriz_dixon_coles(lambda_loc, lambda_vis, max_goles=6):
     return matriz
 
 def simular_monte_carlo(matriz_prob, num_simulaciones=10000, k_altitud=1.0, k_temperatura=1.0, lambda_tot=2.5):
-    """
-    Ejecuta 10,000 simulaciones de Monte Carlo jerárquicas.
-    """
     resultados = list(matriz_prob.keys())
     pesos = list(matriz_prob.values())
     
@@ -147,71 +152,81 @@ def simular_monte_carlo(matriz_prob, num_simulaciones=10000, k_altitud=1.0, k_te
     }
 
 def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatura=1.0, k_motivacion=1.0):
-    """Integración jerárquica de xG, Motivación, Dixon-Coles y Monte Carlo."""
     lambda_loc_adj = lambda_loc * k_altitud * k_motivacion
     lambda_vis_adj = lambda_vis * (2.0 - k_altitud)
-    
     matriz_teorica = generar_matriz_dixon_coles(lambda_loc_adj, lambda_vis_adj)
-    
-    return simular_monte_carlo(
-        matriz_teorica, 
-        num_simulaciones=NUM_SIMULACIONES_MONTECARLO, 
-        k_altitud=k_altitud, 
-        k_temperatura=k_temperatura,
-        lambda_tot=lambda_loc_adj + lambda_vis_adj
-    )
+    return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN DINÁMICA CON CONTROL DE CUOTA (ANTI-RATE LIMIT)
+# 3. EXTRACTION DINÁMICA DE PARTIDOS Y POSICIONES REALES DE HOY
 # ---------------------------------------------------------
-def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre, pos_fallback_loc="En competencia", pos_fallback_vis="En competencia"):
-    """
-    Investiga en Google Search en tiempo real la tabla oficial y noticias de hoy.
-    Aplica pausas estratégicas de 8 segundos para soportar alta demanda de fin de semana/Champions.
-    """
+def buscar_agenda_real_hoy():
+    """Busca en Google Search los partidos de fútbol que se juegan HOY."""
+    if not client:
+        return []
+
+    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
+    prompt = (
+        f"Busca en Google Search la agenda oficial de partidos de fútbol para HOY {fecha_hoy} en la Liga BetPlay Colombia y principales ligas internacionales.\n"
+        f"Devuelve la lista de partidos programados para jugar HOY en formato JSON."
+    )
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                response_mime_type="application/json",
+                response_schema=AgendaDiariaSchema,
+            )
+        )
+        if response.text:
+            data = json.loads(response.text)
+            return data.get("partidos", [])
+    except Exception as e:
+        print("Error buscando agenda de hoy:", e)
+    return []
+
+def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
     lambda_loc_base = 1.40
     lambda_vis_base = 1.10
     factor_loc = 1.0
     factor_vis = 1.0
-    pos_local = pos_fallback_loc
-    pos_visita = pos_fallback_vis
+    pos_local = "En tabla"
+    pos_visita = "En tabla"
 
     if client:
-        fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+        fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
         prompt = (
-            f"Busca en Google Search la tabla de posiciones oficial más reciente de {liga_nombre} para la jornada de hoy {fecha_hoy}.\n"
-            f"Extrae el puesto exacto en la tabla para {equipo_local} (posicion_exacta_local) y para {equipo_visitante} (posicion_exacta_visitante).\n"
-            f"Identifica lesionados, sancionados o rotaciones confirmadas para hoy para determinar los factores numéricos de ajuste de fuerza."
+            f"Busca en Google Search la tabla de posiciones oficial más reciente de {liga_nombre} para hoy {fecha_hoy}.\n"
+            f"Identifica en qué puesto exacto está {equipo_local} (posicion_exacta_local) y {equipo_visitante} (posicion_exacta_visitante).\n"
+            f"Analiza alineaciones, lesiones o sanciones de hoy para ajustar factores de fuerza."
         )
-        for intento in range(2):
-            try:
-                time.sleep(8)  # Pausa optimizada para evitar colapsos por tasa en días de alta demanda
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                        response_mime_type="application/json",
-                        response_schema=AnalisisPartidoDinamicoSchema,
-                    )
+        try:
+            time.sleep(6)
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    response_mime_type="application/json",
+                    response_schema=AjusteFuerzaSchema,
                 )
-                if response.text:
-                    data = json.loads(response.text)
-                    factor_loc = float(data.get("factor_ajuste_local", 1.0))
-                    factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                    
-                    pl = str(data.get("posicion_exacta_local", "")).strip()
-                    pv = str(data.get("posicion_exacta_visitante", "")).strip()
-                    
-                    if pl and "DESCONOCIDO" not in pl.upper() and "N/A" not in pl.upper():
-                        pos_local = pl if "°" in pl or "Puesto" in pl else f"{pl}°"
-                    if pv and "DESCONOCIDO" not in pv.upper() and "N/A" not in pv.upper():
-                        pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
-                    break
-            except Exception as e:
-                time.sleep(5)
+            )
+            if response.text:
+                data = json.loads(response.text)
+                factor_loc = float(data.get("factor_ajuste_local", 1.0))
+                factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
+                pl = str(data.get("posicion_exacta_local", "")).strip()
+                pv = str(data.get("posicion_exacta_visitante", "")).strip()
+                
+                if pl and "DESCONOCIDO" not in pl.upper() and "N/A" not in pl.upper():
+                    pos_local = pl if "°" in pl or "Puesto" in pl else f"{pl}°"
+                if pv and "DESCONOCIDO" not in pv.upper() and "N/A" not in pv.upper():
+                    pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
+        except Exception as e:
+            print("Error analizando partido IA:", e)
 
-    # REFINACIÓN FINAL DE MONTE CARLO (10,000 iteraciones jerárquicas)
     stats = evaluar_partido_completo(lambda_loc_base * factor_loc, lambda_vis_base * factor_vis)
     return {
         "liga": liga_nombre,
@@ -223,49 +238,31 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
         "stats": stats
     }
 
-# ---------------------------------------------------------
-# 4. INGESTIÓN AUTOMÁTICA DE LA JORNADA
-# ---------------------------------------------------------
 def obtener_partidos_hoy():
+    fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
+    print(f"Buscando partidos reales programados para HOY: {fecha_hoy_str}...")
+    
+    partidos_agenda = buscar_agenda_real_hoy()
     partidos_analizados = []
-    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 
-    # Agenda base dinámica (Soporta múltiples ligas y jornadas de Champions/Fin de semana)
-    agenda_jornada = [
-        {
-            "liga": "Liga BetPlay Colombia",
-            "local": "Boyacá Chicó",
-            "visitante": "Deportivo Pasto",
-            "pos_loc": "17°",
-            "pos_vis": "15°",
-            "hora": f"{fecha_hoy} — 06:10 PM"
-        },
-        {
-            "liga": "Liga BetPlay Colombia",
-            "local": "Once Caldas",
-            "visitante": "Atlético Bucaramanga",
-            "pos_loc": "10°",
-            "pos_vis": "6°",
-            "hora": f"{fecha_hoy} — 08:15 PM"
-        }
-    ]
+    if not partidos_agenda:
+        print("No se encontraron partidos programados para el día de hoy.")
+        return []
 
-    print("Iniciando refinación táctica con Monte Carlo e Ingestión Dinámica de la Tabla...")
-    for item in agenda_jornada:
+    for item in partidos_agenda:
+        hora_fmt = f"{fecha_hoy_str} — {item['hora']}"
         partido_refinado = analizar_y_refinar_partido_ia(
             item["local"], 
             item["visitante"], 
-            item["hora"], 
-            item["liga"],
-            item.get("pos_loc", "En tabla"),
-            item.get("pos_vis", "En tabla")
+            hora_fmt, 
+            item["liga"]
         )
         partidos_analizados.append(partido_refinado)
 
     return partidos_analizados
 
 # ---------------------------------------------------------
-# 5. DESPACHO DE REPORTES A TELEGRAM (MENSAJES INDIVIDUALES LIMPIOS)
+# 4. DESPACHO DE REPORTES A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(token, chat_id, texto):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -287,7 +284,7 @@ def enviar_reporte_telegram(partidos):
         return
 
     if not partidos:
-        fecha_actual = datetime.now().strftime("%Y-%m-%d")
+        fecha_actual = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
         mensaje = (
             f"🛡️ **REPORTE DE JORNADA - {fecha_actual}**\n\n"
             f"📊 *No se registran partidos programados por jugar para el día de hoy en las ligas monitorizadas.*\n\n"
@@ -300,7 +297,6 @@ def enviar_reporte_telegram(partidos):
         st = p["stats"]
         destacadas = "\n".join(st["opciones_destacadas"])
 
-        # Ficha ultralimpia individual por partido
         mensaje = (
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
@@ -313,7 +309,7 @@ def enviar_reporte_telegram(partidos):
             f"{destacadas}"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
-        time.sleep(2)  # Pausa de 2 segundos entre mensajes a Telegram para evitar bloqueos del Bot API
+        time.sleep(2)
 
 # ---------------------------------------------------------
 # EJECUCIÓN PRINCIPAL
