@@ -8,12 +8,12 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS
+# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS DESDE SECRETS
 # ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN_FUTBOL") or os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID_FUTBOL") or os.getenv("TELEGRAM_CHAT_ID")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "8650458483:AAFHgr5-yBeYdU3_T153BuSeNC2iSbV1BQ4"
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or "8707489920"
+ODDS_API_KEY = os.getenv("ODDS_API_KEY") or "f52fed19ba1071472e5a25c88fa23053"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
@@ -89,7 +89,6 @@ def obtener_agenda_betplay_espn():
 
 def obtener_partidos_jornada():
     ahora = datetime.now(ZONA_HORARIA_COLOMBIA)
-    # Rango ampliado de 48 horas para capturar la jornada completa sin cortes de zona horaria
     inicio = ahora - timedelta(hours=12)
     fin = ahora + timedelta(hours=48)
 
@@ -97,10 +96,6 @@ def obtener_partidos_jornada():
     tiene_betplay = False
 
     for liga in LIGAS_TOP:
-        if not ODDS_API_KEY:
-            print("Aviso: ODDS_API_KEY no detectada.")
-            break
-            
         url = f"https://api.the-odds-api.com/v4/sports/{liga['key']}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h"
         try:
             res = requests.get(url, timeout=8)
@@ -215,14 +210,6 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
 # 4. ANÁLISIS DE IA COMBINADO (GROQ BASE + GEMINI REFINAMIENTO)
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
-    if not GROQ_API_KEY:
-        return {
-            "ambos_marcan_pronostico": "SÍ",
-            "stake": "4/5",
-            "probabilidad_estimada": "68%",
-            "cobertura_goles": "Más de 1.5 Goles"
-        }
-
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -301,7 +288,8 @@ def enviar_mensaje_telegram(texto):
         "parse_mode": "HTML"
     }
     try:
-        requests.post(url, json=payload, timeout=8)
+        res = requests.post(url, json=payload, timeout=8)
+        print("Respuesta Telegram HTTP:", res.status_code)
     except Exception as e:
         print("Error enviando a Telegram:", e)
 
