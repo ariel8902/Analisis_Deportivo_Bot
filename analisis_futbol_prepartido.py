@@ -23,7 +23,13 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-MODELO_GEMINI = 'gemini-2.5-flash'
+MODELO_OFICIAL = 'gemini-3.8-flash'
+
+# FILTRO OBLIGATORIO DE LIGAS PRIORITARIAS (EVITA SUB-21 Y LIGAS MENORES)
+LIGAS_PRIORITARIAS = [
+    "PRIMERA A", "BETPLAY", "COLOMBIA", "LALIGA", "PREMIER LEAGUE", 
+    "SERIE A", "BUNDESLIGA", "LIGUE 1", "CHAMPIONS LEAGUE", "EUROPA LEAGUE"
+]
 
 class AjusteFuerzaSchema(BaseModel):
     posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '3°'")
@@ -148,7 +154,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. AGENDA DESDE THESPORTSDB API + VALIDACIÓN CON GEMINI
+# 3. AGENDA FILTRADA + VALIDACIÓN CON GEMINI 3.8-FLASH
 # ---------------------------------------------------------
 def analizar_partido_con_gemini(local, visitante, liga):
     factor_loc, factor_vis = 1.0, 1.0
@@ -161,9 +167,9 @@ def analizar_partido_con_gemini(local, visitante, liga):
             f"Obtén el puesto exacto en la tabla de posiciones de cada equipo y estima el factor de ajuste de fuerza."
         )
         try:
-            time.sleep(3)
+            time.sleep(2)
             response = client.models.generate_content(
-                model=MODELO_GEMINI,
+                model=MODELO_OFICIAL,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -182,7 +188,7 @@ def analizar_partido_con_gemini(local, visitante, liga):
                 if pv and "DESCONOCIDO" not in pv.upper():
                     pos_visita = pv if "°" in pv else f"{pv}°"
         except Exception as e:
-            print("Aviso al consultar Gemini:", e)
+            print("Aviso al consultar Gemini 3.8:", e)
 
     stats = evaluar_partido_completo(1.40 * factor_loc, 1.10 * factor_vis)
     return pos_local, pos_visita, stats
@@ -208,23 +214,27 @@ def obtener_jornada_completa():
                 
                 if eventos:
                     for ev in eventos:
-                        liga = ev.get("strLeague", "Fútbol Profesional")
-                        local = ev.get("strHomeTeam", "Local")
-                        visitante = ev.get("strAwayTeam", "Visitante")
-                        hora_str = ev.get("strTime", "00:00:00")
+                        liga = ev.get("strLeague", "").strip()
+                        liga_upper = liga.upper()
                         
-                        pos_loc, pos_vis, stats = analizar_partido_con_gemini(local, visitante, liga)
-                        
-                        hora_fmt = f"{fecha_hoy} — {hora_str[:5]}"
-                        partidos_analizados.append({
-                            "liga": liga.upper(),
-                            "local": local,
-                            "visitante": visitante,
-                            "pos_local": pos_loc,
-                            "pos_visita": pos_vis,
-                            "hora_fecha": hora_fmt,
-                            "stats": stats
-                        })
+                        # FILTRADO DE SEGURIDAD PARA LIGAS PRINCIPALES
+                        if any(lp in liga_upper for lp in LIGAS_PRIORITARIAS):
+                            local = ev.get("strHomeTeam", "Local")
+                            visitante = ev.get("strAwayTeam", "Visitante")
+                            hora_str = ev.get("strTime", "00:00:00")
+                            
+                            pos_loc, pos_vis, stats = analizar_partido_con_gemini(local, visitante, liga)
+                            
+                            hora_fmt = f"{fecha_hoy} — {hora_str[:5]}"
+                            partidos_analizados.append({
+                                "liga": liga_upper,
+                                "local": local,
+                                "visitante": visitante,
+                                "pos_local": pos_loc,
+                                "pos_visita": pos_vis,
+                                "hora_fecha": hora_fmt,
+                                "stats": stats
+                            })
     except Exception as e:
         print(f"Error consultando la API de eventos: {e}")
 
@@ -256,7 +266,7 @@ def enviar_reporte_telegram(partidos):
         fecha_actual = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
         mensaje = (
             f"🛡️ **REPORTE DE JORNADA - {fecha_actual}**\n\n"
-            f"📊 *No se registran partidos programados en la agenda pública de hoy.*\n\n"
+            f"📊 *No se registran partidos programados de las ligas prioritarias (Liga BetPlay / Ligas Europeas) para el día de hoy.*\n\n"
             f"💡 *El sistema reanudará las simulaciones en la siguiente fecha con agenda activa.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
