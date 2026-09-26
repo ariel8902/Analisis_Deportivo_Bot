@@ -173,7 +173,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN CON FILTRADO Y REINTENTOS DE CUOTA EN NIVEL 3
+# 3. EXTRACCIÓN CON REINTENTO EXTENDIDO PARA CUOTAS (429)
 # ---------------------------------------------------------
 def analizar_partido_con_gemini(local, visitante, liga):
     factor_loc, factor_vis = 1.0, 1.0
@@ -187,7 +187,7 @@ def analizar_partido_con_gemini(local, visitante, liga):
         )
         for intento in range(2):
             try:
-                time.sleep(3)
+                time.sleep(4)
                 response = client.models.generate_content(
                     model=MODELO_OFICIAL,
                     contents=prompt,
@@ -210,7 +210,7 @@ def analizar_partido_con_gemini(local, visitante, liga):
                     break
             except Exception as e:
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    time.sleep(10)
+                    time.sleep(12)
                 else:
                     break
 
@@ -228,7 +228,7 @@ def buscar_agenda_directa_gemini(fecha_hoy):
         f"NO incluyas torneos Sub-21, juveniles ni ligas femeninas. Devuelve la lista en formato JSON exacto."
     )
     
-    # BUCLE CON RESILIENCIA DE CUOTA (429) PARA EL NIVEL 3
+    # MARGEN EXPANDIDO A 25 SEGUNDOS PARA REFRESCAR LA CUOTA EN GOOGLE
     for intento in range(1, 3):
         try:
             response = client.models.generate_content(
@@ -258,8 +258,8 @@ def buscar_agenda_directa_gemini(fecha_hoy):
                 return partidos
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                print(f"Límite de frecuencia (429) en Nivel 3. Pausando 12s para reintentar (Intento {intento}/2)...")
-                time.sleep(12)
+                print(f"Límite de frecuencia (429) en Nivel 3. Pausando 25s para refrescar cuota (Intento {intento}/2)...")
+                time.sleep(25)
             else:
                 print("Error en Búsqueda Directa Gemini:", e)
                 break
