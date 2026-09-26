@@ -173,7 +173,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN CON FILTRADO ESTRICTO DE CATEGORÍA
+# 3. EXTRACCIÓN CON FILTRADO Y REINTENTOS DE CUOTA EN NIVEL 3
 # ---------------------------------------------------------
 def analizar_partido_con_gemini(local, visitante, liga):
     factor_loc, factor_vis = 1.0, 1.0
@@ -210,7 +210,7 @@ def analizar_partido_con_gemini(local, visitante, liga):
                     break
             except Exception as e:
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    time.sleep(8)
+                    time.sleep(10)
                 else:
                     break
 
@@ -227,34 +227,42 @@ def buscar_agenda_directa_gemini(fecha_hoy):
         f"Busca partidos en Liga BetPlay Colombia, LaLiga, Premier League, Serie A, Bundesliga, Ligue 1 o Champions League.\n"
         f"NO incluyas torneos Sub-21, juveniles ni ligas femeninas. Devuelve la lista en formato JSON exacto."
     )
-    try:
-        response = client.models.generate_content(
-            model=MODELO_OFICIAL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                response_mime_type="application/json",
-                response_schema=AgendaRespaldoSchema,
+    
+    # BUCLE CON RESILIENCIA DE CUOTA (429) PARA EL NIVEL 3
+    for intento in range(1, 3):
+        try:
+            response = client.models.generate_content(
+                model=MODELO_OFICIAL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    response_mime_type="application/json",
+                    response_schema=AgendaRespaldoSchema,
+                )
             )
-        )
-        if response.text:
-            data = json.loads(response.text)
-            partidos_raw = data.get("partidos", [])
-            partidos = []
-            for p in partidos_raw:
-                pos_loc, pos_vis, stats = analizar_partido_con_gemini(p["local"], p["visitante"], p["liga"])
-                partidos.append({
-                    "liga": p["liga"].upper(),
-                    "local": p["local"],
-                    "visitante": p["visitante"],
-                    "pos_local": pos_loc,
-                    "pos_visita": pos_vis,
-                    "hora_fecha": f"{fecha_hoy} — {p['hora']}",
-                    "stats": stats
-                })
-            return partidos
-    except Exception as e:
-        print("Error en Búsqueda Directa Gemini:", e)
+            if response.text:
+                data = json.loads(response.text)
+                partidos_raw = data.get("partidos", [])
+                partidos = []
+                for p in partidos_raw:
+                    pos_loc, pos_vis, stats = analizar_partido_con_gemini(p["local"], p["visitante"], p["liga"])
+                    partidos.append({
+                        "liga": p["liga"].upper(),
+                        "local": p["local"],
+                        "visitante": p["visitante"],
+                        "pos_local": pos_loc,
+                        "pos_visita": pos_vis,
+                        "hora_fecha": f"{fecha_hoy} — {p['hora']}",
+                        "stats": stats
+                    })
+                return partidos
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                print(f"Límite de frecuencia (429) en Nivel 3. Pausando 12s para reintentar (Intento {intento}/2)...")
+                time.sleep(12)
+            else:
+                print("Error en Búsqueda Directa Gemini:", e)
+                break
         
     return []
 
