@@ -3,8 +3,7 @@ import math
 import json
 import time
 import random
-import urllib.request
-import urllib.parse
+import requests
 from datetime import datetime, timezone, timedelta
 from google import genai
 
@@ -32,54 +31,62 @@ LIGAS_ESPN = {
 }
 
 # ---------------------------------------------------------
-# 2. INGESTA DIRECTA DE AGENDA DESDE ESPN (CON USER-AGENT)
+# 2. INGESTA DIRECTA DE AGENDA DESDE ESPN (CON REQUESTS + USER AGENT)
 # ---------------------------------------------------------
 def obtener_agenda_espn():
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
     partidos_hoy = []
 
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    # Cabeceras completas para evadir el bloqueo HTTP 403 Forbidden
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+    }
+
+    session = requests.Session()
 
     for code_liga, nombre_liga in LIGAS_ESPN.items():
         url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code_liga}/scoreboard?dates={fecha_hoy}"
-        req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=10) as res:
-                if res.status == 200:
-                    data = json.loads(res.read().decode('utf-8'))
-                    events = data.get("events", [])
-                    for ev in events:
-                        competitions = ev.get("competitions", [])[0]
-                        competitors = competitions.get("competitors", [])
+            response = session.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                events = data.get("events", [])
+                for ev in events:
+                    competitions = ev.get("competitions", [])[0]
+                    competitors = competitions.get("competitors", [])
+                    
+                    local = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                    visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                    
+                    if local and visita:
+                        nom_loc = local["team"]["displayName"]
+                        nom_vis = visita["team"]["displayName"]
                         
-                        local = next((c for c in competitors if c.get("homeAway") == "home"), None)
-                        visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                        
-                        if local and visita:
-                            nom_loc = local["team"]["displayName"]
-                            nom_vis = visita["team"]["displayName"]
-                            
-                            # Filtro estricto para evitar juveniles / Sub-20
-                            if "sub-" in nom_loc.lower() or "sub-" in nom_vis.lower() or "u20" in nom_loc.lower():
-                                continue
+                        # Filtro estricto para evitar juveniles / Sub-20
+                        if "sub-" in nom_loc.lower() or "sub-" in nom_vis.lower() or "u20" in nom_loc.lower():
+                            continue
 
-                            # Conversión de hora UTC a Colombia (UTC-5)
-                            date_utc_str = ev.get("date", "")
-                            try:
-                                dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                                dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                                hora_fmt = dt_col.strftime("%I:%M %p")
-                            except Exception:
-                                hora_fmt = "Por definir"
+                        # Conversión de hora UTC a Colombia (UTC-5)
+                        date_utc_str = ev.get("date", "")
+                        try:
+                            dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
+                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                            hora_fmt = dt_col.strftime("%I:%M %p")
+                        except Exception:
+                            hora_fmt = "Por definir"
 
-                            partidos_hoy.append({
-                                "liga": nombre_liga,
-                                "local": nom_loc,
-                                "visitante": nom_vis,
-                                "hora": hora_fmt,
-                                "fuerza_loc": random.uniform(1.2, 2.1),
-                                "fuerza_vis": random.uniform(0.8, 1.6)
-                            })
+                        partidos_hoy.append({
+                            "liga": nombre_liga,
+                            "local": nom_loc,
+                            "visitante": nom_vis,
+                            "hora": hora_fmt,
+                            "fuerza_loc": random.uniform(1.2, 2.1),
+                            "fuerza_vis": random.uniform(0.8, 1.6)
+                        })
+            else:
+                print(f"Aviso en {code_liga}: Código HTTP {response.status_code}")
         except Exception as e:
             print(f"Aviso al consultar liga {code_liga}:", e)
 
@@ -169,11 +176,14 @@ def enviar_mensaje_telegram(texto):
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "Markdown"}).encode('utf-8')
-    req = urllib.request.Request(url, data=payload, method='POST')
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": texto,
+        "parse_mode": "Markdown"
+    }
     try:
-        with urllib.request.urlopen(req, timeout=10) as res:
-            print("Mensaje despachado a Telegram. HTTP:", res.status)
+        res = requests.post(url, data=payload, timeout=10)
+        print("Mensaje despachado a Telegram. HTTP:", res.status_code)
     except Exception as e:
         print("Error enviando Telegram:", e)
 
