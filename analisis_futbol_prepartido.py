@@ -20,75 +20,59 @@ NUM_SIMULACIONES = 10000
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_OFICIAL = 'gemini-3.8-flash'
 
-# Diccionario de ligas ESPN para ingesta directa
-LIGAS_ESPN = {
-    "col.1": "Liga BetPlay (Colombia)",
-    "esp.1": "LaLiga (España)",
-    "eng.1": "Premier League (Inglaterra)",
-    "ita.1": "Serie A (Italia)",
-    "ger.1": "Bundesliga (Alemania)",
-    "uefa.champions": "UEFA Champions League"
-}
+# Endpoint público global sin bloqueo de IP de GitHub Actions
+URL_AGENDA_GLOBAL = "https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d="
 
 # ---------------------------------------------------------
-# 2. INGESTA DIRECTA DE AGENDA DESDE ESPN (CON REQUESTS + USER AGENT)
+# 2. INGESTA DIRECTA DE AGENDA (LIBRE DE BLOQUEOS 403 Y 429)
 # ---------------------------------------------------------
-def obtener_agenda_espn():
-    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
+def obtener_agenda_futbol():
+    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
     partidos_hoy = []
 
-    # Cabeceras completas para evadir el bloqueo HTTP 403 Forbidden
+    url = f"{URL_AGENDA_GLOBAL}{fecha_hoy}&s=Soccer"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
     }
 
-    session = requests.Session()
+    try:
+        res = requests.get(url, headers=headers, timeout=12)
+        if res.status_code == 200:
+            data = res.json()
+            eventos = data.get("events") or []
 
-    for code_liga, nombre_liga in LIGAS_ESPN.items():
-        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code_liga}/scoreboard?dates={fecha_hoy}"
-        try:
-            response = session.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                events = data.get("events", [])
-                for ev in events:
-                    competitions = ev.get("competitions", [])[0]
-                    competitors = competitions.get("competitors", [])
-                    
-                    local = next((c for c in competitors if c.get("homeAway") == "home"), None)
-                    visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                    
-                    if local and visita:
-                        nom_loc = local["team"]["displayName"]
-                        nom_vis = visita["team"]["displayName"]
-                        
-                        # Filtro estricto para evitar juveniles / Sub-20
-                        if "sub-" in nom_loc.lower() or "sub-" in nom_vis.lower() or "u20" in nom_loc.lower():
-                            continue
+            for ev in eventos:
+                liga = ev.get("strLeague", "Liga Profesional")
+                local = ev.get("strHomeTeam")
+                visita = ev.get("strAwayTeam")
+                
+                if not local or not visita:
+                    continue
 
-                        # Conversión de hora UTC a Colombia (UTC-5)
-                        date_utc_str = ev.get("date", "")
-                        try:
-                            dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                            hora_fmt = dt_col.strftime("%I:%M %p")
-                        except Exception:
-                            hora_fmt = "Por definir"
+                # Filtro juveniles
+                if "sub-" in local.lower() or "sub-" in visita.lower() or "u20" in local.lower():
+                    continue
 
-                        partidos_hoy.append({
-                            "liga": nombre_liga,
-                            "local": nom_loc,
-                            "visitante": nom_vis,
-                            "hora": hora_fmt,
-                            "fuerza_loc": random.uniform(1.2, 2.1),
-                            "fuerza_vis": random.uniform(0.8, 1.6)
-                        })
-            else:
-                print(f"Aviso en {code_liga}: Código HTTP {response.status_code}")
-        except Exception as e:
-            print(f"Aviso al consultar liga {code_liga}:", e)
+                # Conversión de hora
+                hora_raw = ev.get("strTime", "00:00:00")
+                try:
+                    time_obj = datetime.strptime(hora_raw[:5], "%H:%M")
+                    hora_fmt = time_obj.strftime("%I:%M %p")
+                except Exception:
+                    hora_fmt = "Por definir"
+
+                partidos_hoy.append({
+                    "liga": liga,
+                    "local": local,
+                    "visitante": visita,
+                    "hora": hora_fmt,
+                    "fuerza_loc": random.uniform(1.2, 2.1),
+                    "fuerza_vis": random.uniform(0.8, 1.6)
+                })
+        else:
+            print(f"Respuesta del servidor de agenda: HTTP {res.status_code}")
+    except Exception as e:
+        print("Error en consulta de agenda:", e)
 
     return partidos_hoy
 
@@ -96,11 +80,8 @@ def obtener_agenda_espn():
 # 3. MOTOR MONTE CARLO Y BIVARIATE DIXON-COLES (LOCAL)
 # ---------------------------------------------------------
 def simular_monte_carlo(lambda_loc, lambda_vis, num_sim=10000):
-    p_local = 0
-    p_empate = 0
-    p_visita = 0
-    p_over25 = 0
-    p_btts = 0
+    p_local, p_empate, p_visita = 0, 0, 0
+    p_over25, p_btts = 0, 0
 
     for _ in range(num_sim):
         l_l, l_v = lambda_loc, lambda_vis
@@ -189,7 +170,7 @@ def enviar_mensaje_telegram(texto):
 
 def ejecutar_bot_futbol():
     fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    partidos = obtener_agenda_espn()
+    partidos = obtener_agenda_futbol()
 
     if not partidos:
         mensaje = (
