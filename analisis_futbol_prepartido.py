@@ -23,6 +23,9 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+# MODELOS OFICIALES REQUERIDOS SEGÚN LOG DE GOOGLE
+MODELOS_GEMINI = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']
+
 class PartidoAgendaSchema(BaseModel):
     liga: str = Field(description="Nombre de la liga o torneo")
     local: str = Field(description="Nombre del equipo local")
@@ -155,7 +158,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN ROBUSTA DE AGENDA Y DATOS
+# 3. EXTRACCIÓN CON MODELO GEMINI-3.8-FLASH
 # ---------------------------------------------------------
 def buscar_agenda_real_hoy():
     if not client:
@@ -163,15 +166,12 @@ def buscar_agenda_real_hoy():
 
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
     prompt = (
-        f"Busca en Google Search los partidos de fútbol profesionales que se juegan HOY {fecha_hoy}.\n"
-        f"Incluye partidos de la Liga BetPlay Colombia y de ligas europeas principales (LaLiga, Premier League, Serie A, Bundesliga, Champions League).\n"
-        f"Devuelve la lista de partidos programados para HOY en formato JSON."
+        f"Busca los partidos de fútbol profesionales programados para HOY {fecha_hoy}.\n"
+        f"Incluye Liga BetPlay Colombia y ligas europeas (Premier League, LaLiga, Serie A, Bundesliga, Champions League).\n"
+        f"Devuelve la lista de partidos de HOY en formato JSON exacto."
     )
     
-    # Modelos compatibles en orden de respaldo
-    modelos_a_probar = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash']
-    
-    for mod in modelos_a_probar:
+    for mod in MODELOS_GEMINI:
         try:
             response = client.models.generate_content(
                 model=mod,
@@ -189,7 +189,7 @@ def buscar_agenda_real_hoy():
                     print(f"Agenda cargada exitosamente usando modelo {mod}.")
                     return partidos
         except Exception as e:
-            print(f"Aviso con modelo {mod}: {e}")
+            print(f"Intento con modelo {mod} falló: {e}")
             continue
 
     return []
@@ -205,12 +205,12 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
     if client:
         fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
         prompt = (
-            f"Busca la posición en la tabla actualizada de {liga_nombre} para {equipo_local} y {equipo_visitante} hoy {fecha_hoy}.\n"
-            f"Indica el puesto exacto (ej: '3°') de cada equipo y evalúa factores de ajuste."
+            f"Busca la posición en la tabla de {liga_nombre} para {equipo_local} y {equipo_visitante} hoy {fecha_hoy}.\n"
+            f"Indica el puesto exacto de cada equipo y evalúa factores de ajuste."
         )
-        for mod in ['gemini-2.5-flash', 'gemini-1.5-flash']:
+        for mod in MODELOS_GEMINI:
             try:
-                time.sleep(3)
+                time.sleep(2)
                 response = client.models.generate_content(
                     model=mod,
                     contents=prompt,
@@ -254,7 +254,7 @@ def obtener_partidos_hoy():
     partidos_analizados = []
 
     if not partidos_agenda:
-        print("No se encontraron partidos vía Google Search. Ejecutando verificación de seguridad.")
+        print("Aviso: No se encontraron partidos en la búsqueda. Verifique la agenda pública de la jornada.")
         return []
 
     for item in partidos_agenda:
