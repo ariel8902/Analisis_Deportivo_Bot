@@ -27,9 +27,7 @@ jobs:
       - name: Ejecutar motor de analisis de Python
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_TOKEN_FUTBOL: ${{ secrets.TELEGRAM_TOKEN_FUTBOL }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHAT_ID_FUTBOL: ${{ secrets.TELEGRAM_CHAT_ID_FUTBOL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
