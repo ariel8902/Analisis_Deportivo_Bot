@@ -1,9 +1,9 @@
-name: Ejecutar Bot de Analisis Deportivo
+name: Ejecutar Bot de Analisis Deportivo Prepartido
 
 on:
   schedule:
-    # 13:00 UTC equivale a las 08:00 AM Hora Colombia (UTC-5)
-    - cron: '0 13 * * *'
+    # 00:00 UTC equivale a las 07:00 PM Hora Colombia (UTC-5)
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -28,7 +28,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python analisis_futbol_prepartido.py
