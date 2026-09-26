@@ -7,16 +7,29 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
+from google import genai
+from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN DE APIS Y CREDENCIALES
+# 1. CONFIGURACIÓN Y CREDENCIALES
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 UMBRAL_MINIMO_FILTRO = 70.0
 NUM_SIMULACIONES_MONTECARLO = 10000
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
+
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+MODELO_GEMINI = 'gemini-2.5-flash'
+
+class AjusteFuerzaSchema(BaseModel):
+    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '3°'")
+    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '5°'")
+    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza local (1.0 neutro)")
+    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza visitante (1.0 neutro)")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + MONTE CARLO)
@@ -135,15 +148,56 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. CONSULTA DE AGENDA DESDE ENDPOINT PÚBLICO
+# 3. AGENDA DESDE THESPORTSDB API + VALIDACIÓN CON GEMINI
 # ---------------------------------------------------------
+def analizar_partido_con_gemini(local, visitante, liga):
+    factor_loc, factor_vis = 1.0, 1.0
+    pos_local, pos_visita = "En tabla", "En tabla"
+
+    if client:
+        fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
+        prompt = (
+            f"Investiga en Google Search el partido de hoy ({fecha_hoy}): {local} vs {visitante} ({liga}).\n"
+            f"Obtén el puesto exacto en la tabla de posiciones de cada equipo y estima el factor de ajuste de fuerza."
+        )
+        try:
+            time.sleep(3)
+            response = client.models.generate_content(
+                model=MODELO_GEMINI,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    response_mime_type="application/json",
+                    response_schema=AjusteFuerzaSchema,
+                )
+            )
+            if response.text:
+                data = json.loads(response.text)
+                factor_loc = float(data.get("factor_ajuste_local", 1.0))
+                factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
+                pl = str(data.get("posicion_exacta_local", "")).strip()
+                pv = str(data.get("posicion_exacta_visitante", "")).strip()
+                if pl and "DESCONOCIDO" not in pl.upper():
+                    pos_local = pl if "°" in pl else f"{pl}°"
+                if pv and "DESCONOCIDO" not in pv.upper():
+                    pos_visita = pv if "°" in pv else f"{pv}°"
+        except Exception as e:
+            print("Aviso al consultar Gemini:", e)
+
+    stats = evaluar_partido_completo(1.40 * factor_loc, 1.10 * factor_vis)
+    return pos_local, pos_visita, stats
+
 def obtener_jornada_completa():
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
     print(f"Iniciando consulta de agenda para la fecha {fecha_hoy}...")
 
-    # Endpoint deportivo REST público para la jornada del día
-    url_agenda = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={fecha_hoy.replace('-', '')}"
-    req = urllib.request.Request(url_agenda, headers={"User-Agent": "Mozilla/5.0"})
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
+
+    url_tsdb = f"https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d={fecha_hoy}&s=Soccer"
+    req = urllib.request.Request(url_tsdb, headers=headers)
     
     partidos_analizados = []
     try:
@@ -152,38 +206,27 @@ def obtener_jornada_completa():
                 data = json.loads(res.read().decode('utf-8'))
                 eventos = data.get("events", [])
                 
-                for ev in eventos:
-                    liga_nom = ev.get("league", {}).get("name", "Fútbol Profesional")
-                    competidores = ev.get("competitions", [{}])[0].get("competitors", [])
-                    
-                    if len(competidores) >= 2:
-                        local_team = competidores[0].get("team", {}).get("shortDisplayName", competidores[0].get("team", {}).get("name", "Local"))
-                        visita_team = competidores[1].get("team", {}).get("shortDisplayName", competidores[1].get("team", {}).get("name", "Visitante"))
+                if eventos:
+                    for ev in eventos:
+                        liga = ev.get("strLeague", "Fútbol Profesional")
+                        local = ev.get("strHomeTeam", "Local")
+                        visitante = ev.get("strAwayTeam", "Visitante")
+                        hora_str = ev.get("strTime", "00:00:00")
                         
-                        pos_loc = competidores[0].get("records", [{}])[0].get("summary", "En tabla")
-                        pos_vis = competidores[1].get("records", [{}])[0].get("summary", "En tabla")
-
-                        stats = evaluar_partido_completo(1.40, 1.10)
+                        pos_loc, pos_vis, stats = analizar_partido_con_gemini(local, visitante, liga)
                         
-                        hora_str = ev.get("date", "")
-                        try:
-                            dt_utc = datetime.fromisoformat(hora_str.replace("Z", "+00:00"))
-                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                            hora_fmt = dt_col.strftime("%Y-%m-%d — %I:%M %p")
-                        except Exception:
-                            hora_fmt = f"{fecha_hoy} — Programado"
-
+                        hora_fmt = f"{fecha_hoy} — {hora_str[:5]}"
                         partidos_analizados.append({
-                            "liga": liga_nom.upper(),
-                            "local": local_team,
-                            "visitante": visita_team,
+                            "liga": liga.upper(),
+                            "local": local,
+                            "visitante": visitante,
                             "pos_local": pos_loc,
                             "pos_visita": pos_vis,
                             "hora_fecha": hora_fmt,
                             "stats": stats
                         })
     except Exception as e:
-        print(f"Error consultando la API deportiva: {e}")
+        print(f"Error consultando la API de eventos: {e}")
 
     return partidos_analizados
 
@@ -227,7 +270,7 @@ def enviar_reporte_telegram(partidos):
             f"⚽️ **ANÁLISIS PREPARTIDO**\n"
             f"🏆 **{p['liga']}**\n"
             f"⚔️ **{p['local']} vs {p['visitante']}**\n"
-            f"📌 **Rendimiento Reciente:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
+            f"📌 **Posición en Tabla:** `{p['local']}` ({p['pos_local']}) vs `{p['visitante']}` ({p['pos_visita']})\n"
             f"🕓 `{p['hora_fecha']}`\n\n"
             f"🎯 **OPCIÓN PRINCIPAL DE MAYOR CERTEZA:**\n"
             f"👉 **`{st['top_pick']}`** — Probabilidad: **`{st['top_prob']}%`**\n\n"
