@@ -8,18 +8,16 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS DESDE SECRETS
+# 1. CREDENCIALES SEGUROS
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY") or "f52fed19ba1071472e5a25c88fa23053"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
-# Cliente Oficial de Gemini
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
@@ -28,116 +26,74 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
-# Ligas Europeas desde Odds API (Las mismas de tu Google Apps Script)
-LIGAS_ODDS = [
-    {"key": "soccer_epl", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
-    {"key": "soccer_spain_la_liga", "nombre": "🇪🇸 LaLiga"},
-    {"key": "soccer_italy_serie_a", "nombre": "🇮🇹 Serie A"},
-    {"key": "soccer_germany_bundesliga", "nombre": "🇩🇪 Bundesliga"},
-    {"key": "soccer_france_ligue_one", "nombre": "🇫🇷 Ligue 1"},
-    {"key": "soccer_uefa_champions_league", "nombre": "🇪🇺 Champions League"}
+# Ligas universales en ESPN
+LIGAS_ESPN = [
+    {"slug": "col.1", "nombre": "🇨🇴 Liga BetPlay"},
+    {"slug": "eng.1", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
+    {"slug": "esp.1", "nombre": "🇪🇸 LaLiga"},
+    {"slug": "ita.1", "nombre": "🇮🇹 Serie A"},
+    {"slug": "ger.1", "nombre": "🇩🇪 Bundesliga"},
+    {"slug": "fra.1", "nombre": "🇫🇷 Ligue 1"}
 ]
 
 # ---------------------------------------------------------
-# 2. INGESTA HÍBRIDA INCONDICIONAL (ODDS API + ESPN COLOMBIA)
+# 2. INGESTA DIRECTA UNIVERSAL DESDE ESPN SCOREBOARD
 # ---------------------------------------------------------
 def obtener_partidos_reales():
-    lista_partidos = []
-
-    # 1. Traer Europa desde The-Odds-API (Idéntico a Google Apps Script)
-    for liga in LIGAS_ODDS:
-        url = f"https://api.the-odds-api.com/v4/sports/{liga['key']}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h"
-        try:
-            res = requests.get(url, timeout=8)
-            if res.status_code == 200:
-                eventos = res.json()
-                for ev in eventos:
-                    local = ev.get("home_team")
-                    visita = ev.get("away_team")
-                    
-                    date_utc_str = ev.get("commence_time", "")
-                    try:
-                        dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                        dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                        hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
-                    except Exception:
-                        hora_fmt = "Por definir"
-
-                    cuota_loc, cuota_emp, cuota_vis = "2.10", "3.10", "3.20"
-                    bookmakers = ev.get("bookmakers", [])
-                    if bookmakers:
-                        markets = bookmakers[0].get("markets", [])
-                        h2h = next((m for m in markets if m.get("key") == "h2h"), None)
-                        if h2h:
-                            for out in h2h.get("outcomes", []):
-                                if out.get("name") == local:
-                                    cuota_loc = str(out.get("price"))
-                                elif out.get("name") == visita:
-                                    cuota_vis = str(out.get("price"))
-                                elif out.get("name") == "Draw":
-                                    cuota_emp = str(out.get("price"))
-
-                    lista_partidos.append({
-                        "liga": liga["nombre"],
-                        "local": local,
-                        "visitante": visita,
-                        "fechaHora": hora_fmt,
-                        "cuotaLocal": cuota_loc,
-                        "cuotaEmpate": cuota_emp,
-                        "cuotaVisitante": cuota_vis
-                    })
-        except Exception as e:
-            print(f"Aviso Odds API en {liga['nombre']}:", e)
-
-    # 2. Traer Colombia garantizado directamente desde ESPN
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
     fecha_manana = (datetime.now(ZONA_HORARIA_COLOMBIA) + timedelta(days=1)).strftime("%Y%m%d")
     
-    for f in [fecha_hoy, fecha_manana]:
-        url_col = f"https://site.api.espn.com/apis/site/v2/sports/soccer/col.1/scoreboard?dates={f}"
-        try:
-            res_espn = requests.get(url_col, headers=HEADERS_NAV, timeout=8)
-            if res_espn.status_code == 200:
-                events = res_espn.json().get("events", [])
-                for ev in events:
-                    competitions = ev.get("competitions", [])[0]
-                    competitors = competitions.get("competitors", [])
-                    
-                    local = next((c for c in competitors if c.get("homeAway") == "home"), None)
-                    visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                    
-                    if local and visita:
-                        nom_loc = local["team"]["displayName"]
-                        nom_vis = visita["team"]["displayName"]
-                        
-                        if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower():
+    lista_partidos = []
+
+    for liga in LIGAS_ESPN:
+        for f in [fecha_hoy, fecha_manana]:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['slug']}/scoreboard?dates={f}"
+            try:
+                res = requests.get(url, headers=HEADERS_NAV, timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    events = data.get("events", [])
+                    for ev in events:
+                        competitions = ev.get("competitions", [])
+                        if not competitions:
                             continue
+                        
+                        competitors = competitions[0].get("competitors", [])
+                        local = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                        visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                        
+                        if local and visita:
+                            nom_loc = local.get("team", {}).get("displayName", "Local")
+                            nom_vis = visita.get("team", {}).get("displayName", "Visitante")
+                            
+                            if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
+                                continue
 
-                        date_utc_str = ev.get("date", "")
-                        try:
-                            dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                            hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
-                        except Exception:
-                            hora_fmt = "Hoy / En juego"
+                            date_utc_str = ev.get("date", "")
+                            try:
+                                dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
+                                dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                                hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
+                            except Exception:
+                                hora_fmt = "Por definir"
 
-                        if not any(p["local"] == nom_loc for p in lista_partidos):
-                            lista_partidos.append({
-                                "liga": "🇨🇴 Liga BetPlay",
-                                "local": nom_loc,
-                                "visitante": nom_vis,
-                                "fechaHora": hora_fmt,
-                                "cuotaLocal": "2.10",
-                                "cuotaEmpate": "3.10",
-                                "cuotaVisitante": "3.20"
-                            })
-        except Exception as e:
-            print("Aviso ESPN Colombia:", e)
+                            if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
+                                lista_partidos.append({
+                                    "liga": liga["nombre"],
+                                    "local": nom_loc,
+                                    "visitante": nom_vis,
+                                    "fechaHora": hora_fmt,
+                                    "cuotaLocal": "2.10",
+                                    "cuotaEmpate": "3.10",
+                                    "cuotaVisitante": "3.20"
+                                })
+            except Exception as e:
+                print(f"Error consultando {liga['nombre']}: {e}")
 
     return lista_partidos
 
 # ---------------------------------------------------------
-# 3. MOTOR MONTE CARLO (10,000 SIMULACIONES)
+# 3. MOTOR MONTE CARLO
 # ---------------------------------------------------------
 def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     try:
@@ -205,7 +161,7 @@ def refinamiento_final_gemini(partido, sim_data):
     prompt = (
         f"Actúa como analista jefe de fútbol. Evalúa el partido REAL {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
         f"Métricas del modelo: Probabilidad Ambos Anotan: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
-        f"Redacta una justificación táctica de máximo 2 oraciones en español enfocado en la capacidad goleadora o fallas defensivas de los equipos."
+        f"Redacta una justificación táctica de máximo 2 oraciones en español enfocada en la capacidad goleadora o fallas defensivas."
     )
     try:
         time.sleep(1.5)
