@@ -46,9 +46,8 @@ HEADERS_NAV = {
 # 2. INGESTA HÍBRIDA (THE-ODDS-API + RESPALDO ESPN BETPLAY)
 # ---------------------------------------------------------
 def obtener_agenda_betplay_espn():
-    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
     partidos_col = []
-    url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/col.1/scoreboard?dates={fecha_hoy}"
+    url = "https://site.api.espn.com/apis/site/v2/sports/soccer/col.1/scoreboard"
 
     try:
         res = requests.get(url, headers=HEADERS_NAV, timeout=8)
@@ -72,7 +71,7 @@ def obtener_agenda_betplay_espn():
                     try:
                         dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
                         dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                        hora_fmt = dt_col.strftime("%I:%M %p")
+                        hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
                     except Exception:
                         hora_fmt = "Por definir"
 
@@ -92,8 +91,9 @@ def obtener_agenda_betplay_espn():
 
 def obtener_partidos_jornada():
     ahora = datetime.now(ZONA_HORARIA_COLOMBIA)
+    # Rango extendido a 72 horas para capturar todo el fin de semana sin importar la hora de ejecucion
     inicio = ahora - timedelta(hours=12)
-    fin = ahora + timedelta(hours=48)
+    fin = ahora + timedelta(hours=72)
 
     lista_partidos = []
     tiene_betplay = False
@@ -280,9 +280,8 @@ def refinamiento_final_gemini(partido, sim_data, base_ia):
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
-    # Selección estricta del token validado
     token_final = TELEGRAM_BOT_TOKEN if (TELEGRAM_BOT_TOKEN and len(TELEGRAM_BOT_TOKEN) > 20) else TOKEN_TELEGRAM_REAL
-    chat_final = TELEGRAM_CHAT_ID if (TELEGRAM_CHAT_ID and len(TELEGRAM_CHAT_ID) > 5) else CHAT_ID_REAL
+    chat_final = TELEGRAM_CHAT_ID if (TELEGRAM_CHAT_ID and len(TELEGRAM_CHAT_ID) > 5) else CHAT_ID_PERSONAL
 
     url = f"https://api.telegram.org/bot{token_final}/sendMessage"
     payload = {
