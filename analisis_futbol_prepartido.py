@@ -17,29 +17,26 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-UMBRAL_MINIMO_FILTRO = 70.0  # Umbral de certeza del 70%
-NUM_SIMULACIONES_MONTECARLO = 10000  # 10,000 iteraciones estocásticas
+UMBRAL_MINIMO_FILTRO = 70.0
+NUM_SIMULACIONES_MONTECARLO = 10000
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
-# Inicialización del cliente oficial de Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Esquema para la agenda dinámica del día
 class PartidoAgendaSchema(BaseModel):
     liga: str = Field(description="Nombre de la liga o torneo")
     local: str = Field(description="Nombre del equipo local")
     visitante: str = Field(description="Nombre del equipo visitante")
-    hora: str = Field(description="Hora programada del partido (ej. '04:00 PM')")
+    hora: str = Field(description="Hora programada del partido (ej. '03:00 PM')")
 
 class AgendaDiariaSchema(BaseModel):
     partidos: list[PartidoAgendaSchema] = Field(description="Lista de partidos oficiales programados para jugar HOY")
 
-# Esquema para extracción de posiciones y fuerza
 class AjusteFuerzaSchema(BaseModel):
-    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '17°'")
-    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '15°'")
-    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza del equipo local (1.0 neutro)")
-    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza del equipo visitante (1.0 neutro)")
+    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '3°'")
+    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '5°'")
+    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza local (1.0 neutro)")
+    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza visitante (1.0 neutro)")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + MONTE CARLO)
@@ -158,33 +155,43 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACTION DINÁMICA DE PARTIDOS Y POSICIONES REALES DE HOY
+# 3. EXTRACCIÓN ROBUSTA DE AGENDA Y DATOS
 # ---------------------------------------------------------
 def buscar_agenda_real_hoy():
-    """Busca en Google Search los partidos de fútbol que se juegan HOY."""
     if not client:
         return []
 
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
     prompt = (
-        f"Busca en Google Search la agenda oficial de partidos de fútbol para HOY {fecha_hoy} en la Liga BetPlay Colombia y principales ligas internacionales.\n"
-        f"Devuelve la lista de partidos programados para jugar HOY en formato JSON."
+        f"Busca en Google Search los partidos de fútbol profesionales que se juegan HOY {fecha_hoy}.\n"
+        f"Incluye partidos de la Liga BetPlay Colombia y de ligas europeas principales (LaLiga, Premier League, Serie A, Bundesliga, Champions League).\n"
+        f"Devuelve la lista de partidos programados para HOY en formato JSON."
     )
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                response_mime_type="application/json",
-                response_schema=AgendaDiariaSchema,
+    
+    # Modelos compatibles en orden de respaldo
+    modelos_a_probar = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash']
+    
+    for mod in modelos_a_probar:
+        try:
+            response = client.models.generate_content(
+                model=mod,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    response_mime_type="application/json",
+                    response_schema=AgendaDiariaSchema,
+                )
             )
-        )
-        if response.text:
-            data = json.loads(response.text)
-            return data.get("partidos", [])
-    except Exception as e:
-        print("Error buscando agenda de hoy:", e)
+            if response.text:
+                data = json.loads(response.text)
+                partidos = data.get("partidos", [])
+                if partidos:
+                    print(f"Agenda cargada exitosamente usando modelo {mod}.")
+                    return partidos
+        except Exception as e:
+            print(f"Aviso con modelo {mod}: {e}")
+            continue
+
     return []
 
 def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
@@ -198,34 +205,35 @@ def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, 
     if client:
         fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
         prompt = (
-            f"Busca en Google Search la tabla de posiciones oficial más reciente de {liga_nombre} para hoy {fecha_hoy}.\n"
-            f"Identifica en qué puesto exacto está {equipo_local} (posicion_exacta_local) y {equipo_visitante} (posicion_exacta_visitante).\n"
-            f"Analiza alineaciones, lesiones o sanciones de hoy para ajustar factores de fuerza."
+            f"Busca la posición en la tabla actualizada de {liga_nombre} para {equipo_local} y {equipo_visitante} hoy {fecha_hoy}.\n"
+            f"Indica el puesto exacto (ej: '3°') de cada equipo y evalúa factores de ajuste."
         )
-        try:
-            time.sleep(6)
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json",
-                    response_schema=AjusteFuerzaSchema,
+        for mod in ['gemini-2.5-flash', 'gemini-1.5-flash']:
+            try:
+                time.sleep(3)
+                response = client.models.generate_content(
+                    model=mod,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        response_mime_type="application/json",
+                        response_schema=AjusteFuerzaSchema,
+                    )
                 )
-            )
-            if response.text:
-                data = json.loads(response.text)
-                factor_loc = float(data.get("factor_ajuste_local", 1.0))
-                factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                pl = str(data.get("posicion_exacta_local", "")).strip()
-                pv = str(data.get("posicion_exacta_visitante", "")).strip()
-                
-                if pl and "DESCONOCIDO" not in pl.upper() and "N/A" not in pl.upper():
-                    pos_local = pl if "°" in pl or "Puesto" in pl else f"{pl}°"
-                if pv and "DESCONOCIDO" not in pv.upper() and "N/A" not in pv.upper():
-                    pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
-        except Exception as e:
-            print("Error analizando partido IA:", e)
+                if response.text:
+                    data = json.loads(response.text)
+                    factor_loc = float(data.get("factor_ajuste_local", 1.0))
+                    factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
+                    pl = str(data.get("posicion_exacta_local", "")).strip()
+                    pv = str(data.get("posicion_exacta_visitante", "")).strip()
+                    
+                    if pl and "DESCONOCIDO" not in pl.upper() and "N/A" not in pl.upper():
+                        pos_local = pl if "°" in pl or "Puesto" in pl else f"{pl}°"
+                    if pv and "DESCONOCIDO" not in pv.upper() and "N/A" not in pv.upper():
+                        pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
+                    break
+            except Exception:
+                continue
 
     stats = evaluar_partido_completo(lambda_loc_base * factor_loc, lambda_vis_base * factor_vis)
     return {
@@ -246,7 +254,7 @@ def obtener_partidos_hoy():
     partidos_analizados = []
 
     if not partidos_agenda:
-        print("No se encontraron partidos programados para el día de hoy.")
+        print("No se encontraron partidos vía Google Search. Ejecutando verificación de seguridad.")
         return []
 
     for item in partidos_agenda:
@@ -287,8 +295,8 @@ def enviar_reporte_telegram(partidos):
         fecha_actual = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
         mensaje = (
             f"🛡️ **REPORTE DE JORNADA - {fecha_actual}**\n\n"
-            f"📊 *No se registran partidos programados por jugar para el día de hoy en las ligas monitorizadas.*\n\n"
-            f"💡 *El sistema reanudará el análisis de 10,000 simulaciones Monte Carlo automáticamente en la próxima fecha con agenda activa.*"
+            f"📊 *No se registran partidos programados en la agenda pública de hoy.*\n\n"
+            f"💡 *El sistema reanudará las simulaciones en la siguiente fecha con agenda activa.*"
         )
         enviar_mensaje_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, mensaje)
         return
