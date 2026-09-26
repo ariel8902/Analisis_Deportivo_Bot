@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN DE CREDENCIALES (SECRETS DE GITHUB)
+# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS DESDE SECRETS
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -27,7 +27,6 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
-# Ligas principales de fútbol
 LIGAS_ESPN = [
     {"endpoint": "col.1", "nombre": "🇨🇴 Liga BetPlay"},
     {"endpoint": "eng.1", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
@@ -38,58 +37,61 @@ LIGAS_ESPN = [
 ]
 
 # ---------------------------------------------------------
-# 2. INGESTA DIRECTA DE PARTIDOS REALES (SIN FILTROS RÍGIDOS)
+# 2. INGESTA EXACTA CÓMO TU GOOGLE APPS SCRIPT
 # ---------------------------------------------------------
 def obtener_partidos_reales():
+    # Fechas en formato YYYYMMDD para hoy y mañana
+    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
+    fecha_manana = (datetime.now(ZONA_HORARIA_COLOMBIA) + timedelta(days=1)).strftime("%Y%m%d")
+    
     lista_partidos = []
 
     for liga in LIGAS_ESPN:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['endpoint']}/scoreboard"
-        try:
-            res = requests.get(url, headers=HEADERS_NAV, timeout=10)
-            if res.status_code == 200:
-                events = res.json().get("events", [])
-                for ev in events:
-                    competitions = ev.get("competitions", [])[0]
-                    competitors = competitions.get("competitors", [])
-                    
-                    local = next((c for c in competitors if c.get("homeAway") == "home"), None)
-                    visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                    
-                    if local and visita:
-                        nom_loc = local["team"]["displayName"]
-                        nom_vis = visita["team"]["displayName"]
+        for fecha in [fecha_hoy, fecha_manana]:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['endpoint']}/scoreboard?dates={fecha}"
+            try:
+                res = requests.get(url, headers=HEADERS_NAV, timeout=8)
+                if res.status_code == 200:
+                    events = res.json().get("events", [])
+                    for ev in events:
+                        competitions = ev.get("competitions", [])[0]
+                        competitors = competitions.get("competitors", [])
                         
-                        # Filtrar categorías inferiores o femeninas si aplica
-                        if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
-                            continue
+                        local = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                        visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                        
+                        if local and visita:
+                            nom_loc = local["team"]["displayName"]
+                            nom_vis = visita["team"]["displayName"]
+                            
+                            if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
+                                continue
 
-                        date_utc_str = ev.get("date", "")
-                        try:
-                            dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                            hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
-                        except Exception:
-                            hora_fmt = "Por definir"
+                            date_utc_str = ev.get("date", "")
+                            try:
+                                dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
+                                dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                                hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
+                            except Exception:
+                                hora_fmt = "Por definir"
 
-                        # Evitar duplicados en el reporte
-                        if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
-                            lista_partidos.append({
-                                "liga": liga["nombre"],
-                                "local": nom_loc,
-                                "visitante": nom_vis,
-                                "fechaHora": hora_fmt,
-                                "cuotaLocal": "2.10",
-                                "cuotaEmpate": "3.10",
-                                "cuotaVisitante": "3.20"
-                            })
-        except Exception as e:
-            print(f"Aviso consultando {liga['nombre']}:", e)
+                            if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
+                                lista_partidos.append({
+                                    "liga": liga["nombre"],
+                                    "local": nom_loc,
+                                    "visitante": nom_vis,
+                                    "fechaHora": hora_fmt,
+                                    "cuotaLocal": "2.10",
+                                    "cuotaEmpate": "3.10",
+                                    "cuotaVisitante": "3.20"
+                                })
+            except Exception as e:
+                print(f"Aviso consultando {liga['nombre']}:", e)
 
     return lista_partidos
 
 # ---------------------------------------------------------
-# 3. MOTOR MONTE CARLO (10,000 SIMULACIONES ESTOCÁSTICAS)
+# 3. MOTOR MONTE CARLO
 # ---------------------------------------------------------
 def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     try:
@@ -134,7 +136,7 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. ANÁLISIS DE IA (GROQ ESTRUCTURA + GEMINI TÁCTICO)
+# 4. ANÁLISIS DE IA COMBINADO
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -151,9 +153,9 @@ Responde ÚNICAMENTE JSON: {{"ambos_marcan_pronostico": "SÍ" o "NO", "stake": "
     return {"ambos_marcan_pronostico": "SÍ", "stake": "4/5", "probabilidad_estimada": "68%", "cobertura_goles": "Más de 1.5 Goles"}
 
 def refinamiento_final_gemini(partido, sim_data):
-    if not client_gemini: 
+    if not client_gemini:
         return "Análisis táctico proyectado sobre la potencia ofensiva y vulnerabilidad defensiva en transiciones."
-    
+
     prompt = (
         f"Actúa como analista jefe de fútbol. Evalúa el partido REAL {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
         f"Métricas del modelo: Probabilidad Ambos Anotan: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
@@ -172,7 +174,7 @@ def refinamiento_final_gemini(partido, sim_data):
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Error: Credenciales de Telegram no detectadas en las variables de entorno.")
+        print("Error: Credenciales no configuradas.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
