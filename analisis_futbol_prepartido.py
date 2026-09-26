@@ -23,23 +23,21 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# MODELOS OFICIALES REQUERIDOS SEGÚN LOG DE GOOGLE
-MODELOS_GEMINI = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']
+MODELO_ESTABLE = 'gemini-2.5-flash'
 
-class PartidoAgendaSchema(BaseModel):
+# Esquemas Pydantic estructurados
+class PartidoDetalleSchema(BaseModel):
     liga: str = Field(description="Nombre de la liga o torneo")
-    local: str = Field(description="Nombre del equipo local")
-    visitante: str = Field(description="Nombre del equipo visitante")
-    hora: str = Field(description="Hora programada del partido (ej. '03:00 PM')")
+    local: str = Field(description="Equipo local")
+    visitante: str = Field(description="Equipo visitante")
+    hora: str = Field(description="Hora programada de hoy")
+    pos_local: str = Field(description="Puesto en la tabla del local, ej: '3°'")
+    pos_visita: str = Field(description="Puesto en la tabla del visitante, ej: '5°'")
+    factor_ajuste_local: float = Field(description="Factor de fuerza local (1.0 neutro, 1.2 fuerte, 0.8 débil)")
+    factor_ajuste_visitante: float = Field(description="Factor de fuerza visitante (1.0 neutro, 1.2 fuerte, 0.8 débil)")
 
-class AgendaDiariaSchema(BaseModel):
-    partidos: list[PartidoAgendaSchema] = Field(description="Lista de partidos oficiales programados para jugar HOY")
-
-class AjusteFuerzaSchema(BaseModel):
-    posicion_exacta_local: str = Field(description="Puesto exacto en la tabla del equipo local, ej: '3°'")
-    posicion_exacta_visitante: str = Field(description="Puesto exacto en la tabla del equipo visitante, ej: '5°'")
-    factor_ajuste_local: float = Field(description="Factor de ajuste de fuerza local (1.0 neutro)")
-    factor_ajuste_visitante: float = Field(description="Factor de ajuste de fuerza visitante (1.0 neutro)")
+class JornadaConsolidadaSchema(BaseModel):
+    partidos: list[PartidoDetalleSchema] = Field(description="Lista de partidos de fútbol profesionales que se juegan HOY con sus datos")
 
 # ---------------------------------------------------------
 # 2. MOTOR CUANTITATIVO GENERALIZADO (DIXON-COLES + MONTE CARLO)
@@ -158,116 +156,59 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN CON MODELO GEMINI-3.8-FLASH
+# 3. CONSOLIDACIÓN EN 1 SOLA PETICIÓN DE BÚSQUEDA WEB
 # ---------------------------------------------------------
-def buscar_agenda_real_hoy():
+def obtener_jornada_completa():
     if not client:
         return []
 
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
+    print(f"Iniciando consulta única de búsqueda web para el día {fecha_hoy}...")
+
     prompt = (
-        f"Busca los partidos de fútbol profesionales programados para HOY {fecha_hoy}.\n"
-        f"Incluye Liga BetPlay Colombia y ligas europeas (Premier League, LaLiga, Serie A, Bundesliga, Champions League).\n"
-        f"Devuelve la lista de partidos de HOY en formato JSON exacto."
+        f"Busca en Google Search todos los partidos de fútbol profesionales programados para HOY {fecha_hoy}.\n"
+        f"Incluye partidos de la Liga BetPlay Colombia y ligas europeas (Premier League, LaLiga, Serie A, Bundesliga, Ligue 1).\n"
+        f"Para cada partido encontrado, investiga la posición actual en la tabla de ambos equipos y estima un factor de ajuste de fuerza (1.0 neutro).\n"
+        f"Devuelve la información consolidada en un solo objeto JSON."
     )
-    
-    for mod in MODELOS_GEMINI:
-        try:
-            response = client.models.generate_content(
-                model=mod,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json",
-                    response_schema=AgendaDiariaSchema,
-                )
+
+    try:
+        response = client.models.generate_content(
+            model=MODELO_ESTABLE,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                response_mime_type="application/json",
+                response_schema=JornadaConsolidadaSchema,
             )
-            if response.text:
-                data = json.loads(response.text)
-                partidos = data.get("partidos", [])
-                if partidos:
-                    print(f"Agenda cargada exitosamente usando modelo {mod}.")
-                    return partidos
-        except Exception as e:
-            print(f"Intento con modelo {mod} falló: {e}")
-            continue
+        )
+        if response.text:
+            data = json.loads(response.text)
+            partidos_raw = data.get("partidos", [])
+            print(f"Consulta exitosa. Se extrajeron {len(partidos_raw)} partidos de la web.")
+            
+            partidos_analizados = []
+            for item in partidos_raw:
+                lambda_loc_base = 1.40 * float(item.get("factor_ajuste_local", 1.0))
+                lambda_vis_base = 1.10 * float(item.get("factor_ajuste_visitante", 1.0))
+                
+                stats = evaluar_partido_completo(lambda_loc_base, lambda_vis_base)
+                
+                hora_fmt = f"{fecha_hoy} — {item.get('hora', 'Hoy')}"
+                partidos_analizados.append({
+                    "liga": item.get("liga", "Fútbol Profesional"),
+                    "local": item.get("local", "Local"),
+                    "visitante": item.get("visitante", "Visitante"),
+                    "pos_local": item.get("pos_local", "En tabla"),
+                    "pos_visita": item.get("pos_visita", "En tabla"),
+                    "hora_fecha": hora_fmt,
+                    "stats": stats
+                })
+            return partidos_analizados
+    except Exception as e:
+        print(f"Error en la consulta única a la API: {e}")
 
     return []
-
-def analizar_y_refinar_partido_ia(equipo_local, equipo_visitante, hora_partido, liga_nombre):
-    lambda_loc_base = 1.40
-    lambda_vis_base = 1.10
-    factor_loc = 1.0
-    factor_vis = 1.0
-    pos_local = "En tabla"
-    pos_visita = "En tabla"
-
-    if client:
-        fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-        prompt = (
-            f"Busca la posición en la tabla de {liga_nombre} para {equipo_local} y {equipo_visitante} hoy {fecha_hoy}.\n"
-            f"Indica el puesto exacto de cada equipo y evalúa factores de ajuste."
-        )
-        for mod in MODELOS_GEMINI:
-            try:
-                time.sleep(2)
-                response = client.models.generate_content(
-                    model=mod,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                        response_mime_type="application/json",
-                        response_schema=AjusteFuerzaSchema,
-                    )
-                )
-                if response.text:
-                    data = json.loads(response.text)
-                    factor_loc = float(data.get("factor_ajuste_local", 1.0))
-                    factor_vis = float(data.get("factor_ajuste_visitante", 1.0))
-                    pl = str(data.get("posicion_exacta_local", "")).strip()
-                    pv = str(data.get("posicion_exacta_visitante", "")).strip()
-                    
-                    if pl and "DESCONOCIDO" not in pl.upper() and "N/A" not in pl.upper():
-                        pos_local = pl if "°" in pl or "Puesto" in pl else f"{pl}°"
-                    if pv and "DESCONOCIDO" not in pv.upper() and "N/A" not in pv.upper():
-                        pos_visita = pv if "°" in pv or "Puesto" in pv else f"{pv}°"
-                    break
-            except Exception:
-                continue
-
-    stats = evaluar_partido_completo(lambda_loc_base * factor_loc, lambda_vis_base * factor_vis)
-    return {
-        "liga": liga_nombre,
-        "local": equipo_local,
-        "visitante": equipo_visitante,
-        "pos_local": pos_local,
-        "pos_visita": pos_visita,
-        "hora_fecha": hora_partido,
-        "stats": stats
-    }
-
-def obtener_partidos_hoy():
-    fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    print(f"Buscando partidos reales programados para HOY: {fecha_hoy_str}...")
-    
-    partidos_agenda = buscar_agenda_real_hoy()
-    partidos_analizados = []
-
-    if not partidos_agenda:
-        print("Aviso: No se encontraron partidos en la búsqueda. Verifique la agenda pública de la jornada.")
-        return []
-
-    for item in partidos_agenda:
-        hora_fmt = f"{fecha_hoy_str} — {item['hora']}"
-        partido_refinado = analizar_y_refinar_partido_ia(
-            item["local"], 
-            item["visitante"], 
-            hora_fmt, 
-            item["liga"]
-        )
-        partidos_analizados.append(partido_refinado)
-
-    return partidos_analizados
 
 # ---------------------------------------------------------
 # 4. DESPACHO DE REPORTES A TELEGRAM
@@ -323,5 +264,5 @@ def enviar_reporte_telegram(partidos):
 # EJECUCIÓN PRINCIPAL
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    partidos = obtener_partidos_hoy()
+    partidos = obtener_jornada_completa()
     enviar_reporte_telegram(partidos)
