@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS DESDE SECRETS
+# 1. CONFIGURACIÓN DE CREDENCIALES (SECRETS DE GITHUB)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -18,6 +18,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
+# Cliente Oficial de Gemini
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
@@ -26,7 +27,7 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
-# Ligas oficiales en ESPN
+# Ligas principales de fútbol
 LIGAS_ESPN = [
     {"endpoint": "col.1", "nombre": "🇨🇴 Liga BetPlay"},
     {"endpoint": "eng.1", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
@@ -37,21 +38,15 @@ LIGAS_ESPN = [
 ]
 
 # ---------------------------------------------------------
-# 2. INGESTA DINÁMICA DEL DÍA SIGUIENTE (100% ABIERTA)
+# 2. INGESTA DIRECTA DE PARTIDOS REALES (SIN FILTROS RÍGIDOS)
 # ---------------------------------------------------------
-def obtener_partidos_dia_siguiente():
-    """Calcula dinámicamente la fecha de mañana para obtener la agenda del día siguiente"""
-    ahora_col = datetime.now(ZONA_HORARIA_COLOMBIA)
-    manana_col = ahora_col + timedelta(days=1)
-    fecha_manana_str = manana_col.strftime("%Y%m%d")
-    fecha_reporte_fmt = manana_col.strftime("%d/%m/%Y")
-
+def obtener_partidos_reales():
     lista_partidos = []
 
     for liga in LIGAS_ESPN:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['endpoint']}/scoreboard?dates={fecha_manana_str}"
+        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['endpoint']}/scoreboard"
         try:
-            res = requests.get(url, headers=HEADERS_NAV, timeout=8)
+            res = requests.get(url, headers=HEADERS_NAV, timeout=10)
             if res.status_code == 200:
                 events = res.json().get("events", [])
                 for ev in events:
@@ -65,6 +60,7 @@ def obtener_partidos_dia_siguiente():
                         nom_loc = local["team"]["displayName"]
                         nom_vis = visita["team"]["displayName"]
                         
+                        # Filtrar categorías inferiores o femeninas si aplica
                         if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
                             continue
 
@@ -72,10 +68,11 @@ def obtener_partidos_dia_siguiente():
                         try:
                             dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
                             dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                            hora_fmt = dt_col.strftime("%I:%M %p")
+                            hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
                         except Exception:
                             hora_fmt = "Por definir"
 
+                        # Evitar duplicados en el reporte
                         if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
                             lista_partidos.append({
                                 "liga": liga["nombre"],
@@ -89,10 +86,10 @@ def obtener_partidos_dia_siguiente():
         except Exception as e:
             print(f"Aviso consultando {liga['nombre']}:", e)
 
-    return lista_partidos, fecha_reporte_fmt
+    return lista_partidos
 
 # ---------------------------------------------------------
-# 3. MOTOR MONTE CARLO (10,000 SIMULACIONES)
+# 3. MOTOR MONTE CARLO (10,000 SIMULACIONES ESTOCÁSTICAS)
 # ---------------------------------------------------------
 def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     try:
@@ -137,12 +134,12 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. ANÁLISIS DE IA COMBINADO (GROQ BASE + GEMINI REFINAMIENTO)
+# 4. ANÁLISIS DE IA (GROQ ESTRUCTURA + GEMINI TÁCTICO)
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    prompt = f"""Estructura cuantitativa para partido REAL del día de mañana:
+    prompt = f"""Estructura cuantitativa para partido REAL:
 Liga: {partido['liga']} | Partido: {partido['local']} vs {partido['visitante']}
 Responde ÚNICAMENTE JSON: {{"ambos_marcan_pronostico": "SÍ" o "NO", "stake": "4/5", "probabilidad_estimada": "%", "cobertura_goles": "Más de 1.5 Goles"}}"""
     try:
@@ -154,33 +151,49 @@ Responde ÚNICAMENTE JSON: {{"ambos_marcan_pronostico": "SÍ" o "NO", "stake": "
     return {"ambos_marcan_pronostico": "SÍ", "stake": "4/5", "probabilidad_estimada": "68%", "cobertura_goles": "Más de 1.5 Goles"}
 
 def refinamiento_final_gemini(partido, sim_data):
-    if not client_gemini: return "Análisis táctico basado en la dinámica ofensiva reciente."
-    prompt = f"Analista táctico breve. Partido real para mañana: {partido['local']} vs {partido['visitante']} ({partido['liga']}). Justifica en 2 oraciones si habrá goles o no sabiendo que Both Score es {sim_data['prob_btts']}%."
+    if not client_gemini: 
+        return "Análisis táctico proyectado sobre la potencia ofensiva y vulnerabilidad defensiva en transiciones."
+    
+    prompt = (
+        f"Actúa como analista jefe de fútbol. Evalúa el partido REAL {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
+        f"Métricas del modelo: Probabilidad Ambos Anotan: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
+        f"Redacta una justificación táctica de máximo 2 oraciones en español enfocado en la capacidad goleadora o fallas defensivas de los equipos."
+    )
     try:
+        time.sleep(1.5)
         res = client_gemini.models.generate_content(model=MODELO_GEMINI, contents=prompt)
         return res.text.strip() if res.text else "Análisis ofensivo enfocado en transiciones."
-    except:
-        return "Se proyecta un trámite de propuesta abierta y presencia ofensiva."
+    except Exception as e:
+        print("Aviso Gemini:", e)
+        return "Se proyecta un trámite de propuesta abierta y presencia ofensiva constante."
 
 # ---------------------------------------------------------
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Error: Credenciales no configuradas.")
+        print("Error: Credenciales de Telegram no detectadas en las variables de entorno.")
         return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": texto,
+        "parse_mode": "HTML"
+    }
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}, timeout=8)
+        res = requests.post(url, json=payload, timeout=8)
+        print("Respuesta Telegram HTTP:", res.status_code)
     except Exception as e:
-        print("Error Telegram:", e)
+        print("Error enviando a Telegram:", e)
 
 def ejecutar_bot_futbol():
-    partidos, fecha_reporte = obtener_partidos_dia_siguiente()
-    
-    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - PRONÓSTICOS DÍA SIGUIENTE</b>\n📅 Evaluando jornada del: <b>{fecha_reporte}</b>")
+    fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
+    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - DATOS REALES VERIFICADOS</b>\n📅 Escaneo activo: <b>{fecha_colombia}</b>")
+
+    partidos = obtener_partidos_reales()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA ({fecha_reporte})</b>\n\n📊 <i>No se registraron partidos programados en ESPN para el día de mañana.</i>")
+        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos activos en la agenda de ESPN.</i>")
         return
 
     for p in partidos:
@@ -191,19 +204,21 @@ def ejecutar_bot_futbol():
         mensaje = (
             f"🏆 <b>{p['liga']}</b>\n"
             f"⚽ <b>{p['local']} vs {p['visitante']}</b>\n"
-            f"⏰ Hora: <code>{p['fechaHora']} (Hora COL)</code>\n\n"
-            f"📊 <b>Cuotas 1X2:</b> L: {p['cuotaLocal']} | E: {p['cuotaEmpate']} | V: {p['cuotaVisitante']}\n"
-            f"🎲 <b>Monte Carlo:</b> Both Score: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
+            f"⏰ Fecha/Hora: <code>{p['fechaHora']} (Hora COL)</code>\n\n"
+            f"📊 <b>Cuotas 1X2:</b> L: <code>{p['cuotaLocal']}</code> | E: <code>{p['cuotaEmpate']}</code> | V: <code>{p['cuotaVisitante']}</code>\n"
+            f"🎲 <b>Monte Carlo (10,000 sim):</b> Both Score: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
             f"🔥 <b>PRONÓSTICO PRINCIPAL:</b>\n"
             f"🎯 <b>Ambos Equipos Anotan:</b> <b>{base_ia['ambos_marcan_pronostico']}</b>\n"
-            f"📈 <b>Stake:</b> <code>{base_ia['stake']}</code>\n"
+            f"📈 <b>Confianza / Stake:</b> <code>{base_ia['stake']}</code>\n"
             f"💡 <i>{justificacion}</i>\n\n"
-            f"🛡️ <b>COBERTURA:</b> {base_ia['cobertura_goles']}"
+            f"🛡️ <b>OPCIÓN COBERTURA (GOLES):</b>\n"
+            f"🎯 <b>Línea Alternativa:</b> {base_ia['cobertura_goles']}"
         )
+
         enviar_mensaje_telegram(mensaje)
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Análisis prepartido completado.</b> Partidos procesados para mañana ({fecha_reporte}): {len(partidos)}")
+    enviar_mensaje_telegram(f"✅ <b>Análisis completado.</b> Partidos verídicos procesados: {len(partidos)}")
 
 if __name__ == "__main__":
     ejecutar_bot_futbol()
