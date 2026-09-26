@@ -9,10 +9,10 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (SEGURO DESDE SECRETS)
+# 1. CONFIGURACIÓN Y CREDENCIALES SEGURO DESDE SECRETS
 # ---------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN_FUTBOL")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID_FUTBOL")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN_FUTBOL") or os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID_FUTBOL") or os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
@@ -32,7 +32,7 @@ LIGAS_ESPN = {
 }
 
 # ---------------------------------------------------------
-# 2. INGESTA DIRECTA DE AGENDA DESDE ESPN (SIN CABECERAS BLOQUEADAS)
+# 2. INGESTA DIRECTA DE AGENDA DESDE ESPN (CON USER-AGENT)
 # ---------------------------------------------------------
 def obtener_agenda_espn():
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
@@ -86,7 +86,7 @@ def obtener_agenda_espn():
     return partidos_hoy
 
 # ---------------------------------------------------------
-# 3. MOTOR MONTE CARLO Y BIVARIATE DIXON-COLES
+# 3. MOTOR MONTE CARLO Y BIVARIATE DIXON-COLES (LOCAL)
 # ---------------------------------------------------------
 def simular_monte_carlo(lambda_loc, lambda_vis, num_sim=10000):
     p_local = 0
