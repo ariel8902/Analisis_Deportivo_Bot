@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS DESDE SECRETS
+# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -18,7 +18,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
-# Cliente Oficial de Gemini
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
@@ -27,29 +26,27 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
+# Ligas a consultar en ESPN
+LIGAS_ESPN = [
+    {"endpoint": "col.1", "nombre": "🇨🇴 Liga BetPlay"},
+    {"endpoint": "eng.1", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
+    {"endpoint": "esp.1", "nombre": "🇪🇸 LaLiga"},
+    {"endpoint": "ita.1", "nombre": "🇮🇹 Serie A"},
+    {"endpoint": "ger.1", "nombre": "🇩🇪 Bundesliga"},
+    {"endpoint": "fra.1", "nombre": "🇫🇷 Ligue 1"}
+]
+
 # ---------------------------------------------------------
 # 2. INGESTA DIRECTA DE PARTIDOS REALES DESDE ESPN
 # ---------------------------------------------------------
-def obtener_partidos_reales_espn():
-    """Obtiene la agenda veridica de partidos directamente desde ESPN"""
+def obtener_partidos_reales():
     fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
     fecha_manana = (datetime.now(ZONA_HORARIA_COLOMBIA) + timedelta(days=1)).strftime("%Y%m%d")
-    
-    # Ligas oficiales a monitorear en ESPN
-    ligas_espn = [
-        {"endpoint": "col.1", "nombre": "🇨🇴 Liga BetPlay"},
-        {"endpoint": "eng.1", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
-        {"endpoint": "esp.1", "nombre": "🇪🇸 LaLiga"},
-        {"endpoint": "ita.1", "nombre": "🇮🇹 Serie A"},
-        {"endpoint": "ger.1", "nombre": "🇩🇪 Bundesliga"},
-        {"endpoint": "fra.1", "nombre": "🇫🇷 Ligue 1"}
-    ]
-
     lista_partidos = []
 
-    for liga in ligas_espn:
-        for fecha in [fecha_hoy, fecha_manana]:
-            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['endpoint']}/scoreboard?dates={fecha}"
+    for liga in LIGAS_ESPN:
+        for f in [fecha_hoy, fecha_manana]:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['endpoint']}/scoreboard?dates={f}"
             try:
                 res = requests.get(url, headers=HEADERS_NAV, timeout=8)
                 if res.status_code == 200:
@@ -65,7 +62,6 @@ def obtener_partidos_reales_espn():
                             nom_loc = local["team"]["displayName"]
                             nom_vis = visita["team"]["displayName"]
                             
-                            # Omitir divisiones menores o femeninas no deseadas
                             if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
                                 continue
 
@@ -77,7 +73,6 @@ def obtener_partidos_reales_espn():
                             except Exception:
                                 hora_fmt = "Por definir"
 
-                            # Evitar duplicados
                             if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
                                 lista_partidos.append({
                                     "liga": liga["nombre"],
@@ -89,7 +84,7 @@ def obtener_partidos_reales_espn():
                                     "cuotaVisitante": "3.20"
                                 })
             except Exception as e:
-                print(f"Aviso consultando {liga['nombre']} en ESPN:", e)
+                print(f"Aviso consultando {liga['nombre']}:", e)
 
     return lista_partidos
 
@@ -106,42 +101,29 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     lambda_loc = prob_loc_impl * 2.8
     lambda_vis = prob_vis_impl * 2.5
 
-    p_local, p_empate, p_visita = 0, 0, 0
-    p_over25, p_btts = 0, 0
+    p_local, p_empate, p_visita, p_over25, p_btts = 0, 0, 0, 0, 0
 
     for _ in range(num_sim):
-        l_l = lambda_loc
-        p = math.exp(-l_l)
-        g_l, p_acc = 0, p
-        u = random.random()
+        l_l, p = lambda_loc, math.exp(-lambda_loc)
+        g_l, p_acc, u = 0, p, random.random()
         while u > p_acc and g_l < 10:
             g_l += 1
             p = p * l_l / g_l
             p_acc += p
-        goles_loc = g_l
 
-        l_v = lambda_vis
-        p = math.exp(-l_v)
-        g_v, p_acc = 0, p
-        u = random.random()
+        l_v, p = lambda_vis, math.exp(-lambda_vis)
+        g_v, p_acc, u = 0, p, random.random()
         while u > p_acc and g_v < 10:
             g_v += 1
             p = p * l_v / g_v
             p_acc += p
-        goles_vis = g_v
 
-        if goles_loc > goles_vis:
-            p_local += 1
-        elif goles_loc == goles_vis:
-            p_empate += 1
-        else:
-            p_visita += 1
+        if g_l > g_v: p_local += 1
+        elif g_l == g_v: p_empate += 1
+        else: p_visita += 1
 
-        if (goles_loc + goles_vis) > 2.5:
-            p_over25 += 1
-
-        if goles_loc > 0 and goles_vis > 0:
-            p_btts += 1
+        if (g_l + g_v) > 2.5: p_over25 += 1
+        if g_l > 0 and g_v > 0: p_btts += 1
 
     return {
         "prob_local": round((p_local / num_sim) * 100, 1),
@@ -152,126 +134,74 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. ANÁLISIS DE IA COMBINADO (GROQ BASE + GEMINI REFINAMIENTO)
+# 4. ANÁLISIS DE IA
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    prompt = f"""Actúa como un cuantitativo y analista experto de fútbol especializado en 'AMBOS EQUIPOS ANOTAN' (BTTS).
-Responde ÚNICAMENTE con JSON:
-
-{{
-  "ambos_marcan_pronostico": "SÍ" o "NO",
-  "stake": "Stake (Ejemplo: 4/5)",
-  "probabilidad_estimada": "% estimado",
-  "cobertura_goles": "Opción alternativa de línea de gol"
-}}
-
-DATOS ENCUENTRO REAL:
-- Liga: {partido['liga']}
-- Partido: {partido['local']} vs {partido['visitante']}"""
-
-    payload = {
-        "model": "llama-3.1-8b-instant",
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"}
-    }
-
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    prompt = f"""Estructura cuantitativa para partido REAL:
+Liga: {partido['liga']} | Partido: {partido['local']} vs {partido['visitante']}
+Responde ÚNICAMENTE JSON: {{"ambos_marcan_pronostico": "SÍ" o "NO", "stake": "4/5", "probabilidad_estimada": "%", "cobertura_goles": "Más de 1.5 Goles"}}"""
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=8)
+        res = requests.post(url, headers=headers, json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}, timeout=8)
         if res.status_code == 200:
             return json.loads(res.json()["choices"][0]["message"]["content"])
-    except Exception as e:
-        print("Aviso Groq:", e)
+    except:
+        pass
+    return {"ambos_marcan_pronostico": "SÍ", "stake": "4/5", "probabilidad_estimada": "68%", "cobertura_goles": "Más de 1.5 Goles"}
 
-    return {
-        "ambos_marcan_pronostico": "SÍ",
-        "stake": "4/5",
-        "probabilidad_estimada": "68%",
-        "cobertura_goles": "Más de 1.5 Goles"
-    }
-
-def refinamiento_final_gemini(partido, sim_data, base_ia):
-    if not client_gemini:
-        return "Análisis táctico proyectado sobre la potencia ofensiva y vulnerabilidad defensiva en transiciones."
-
-    prompt = (
-        f"Actúa como el analista jefe de fútbol. Evalúa el partido REAL {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
-        f"Métricas del modelo: Probabilidad Ambos Anotan: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
-        f"Redacta una justificación táctica brillante de máximo 2 oraciones en español enfocada en la potencia ofensiva o vulnerabilidad defensiva."
-    )
-
+def refinamiento_final_gemini(partido, sim_data):
+    if not client_gemini: return "Análisis táctico basado en la dinámica ofensiva reciente."
+    prompt = f"Analista táctico breve. Partido real {partido['local']} vs {partido['visitante']} ({partido['liga']}). Justifica en 2 oraciones si habrá goles o no sabiendo que Both Score es {sim_data['prob_btts']}%."
     try:
-        time.sleep(1.5)
-        res = client_gemini.models.generate_content(
-            model=MODELO_GEMINI,
-            contents=prompt
-        )
-        if res.text:
-            return res.text.strip()
-    except Exception as e:
-        print("Aviso Gemini:", e)
-
-    return f"Se espera un desarrollo de alta intensidad ofensiva favoreciendo el mercado de goles."
+        res = client_gemini.models.generate_content(model=MODELO_GEMINI, contents=prompt)
+        return res.text.strip() if res.text else "Análisis ofensivo enfocado en transiciones."
+    except:
+        return "Se proyecta un trámite de propuesta abierta y presencia ofensiva."
 
 # ---------------------------------------------------------
 # 5. DESPACHO A TELEGRAM
 # ---------------------------------------------------------
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Error: Variables de Telegram no detectadas desde GitHub Secrets.")
+        print("Error: Credenciales no configuradas.")
         return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": texto,
-        "parse_mode": "HTML"
-    }
     try:
-        res = requests.post(url, json=payload, timeout=8)
-        print("Respuesta Telegram HTTP:", res.status_code)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}, timeout=8)
     except Exception as e:
-        print("Error enviando a Telegram:", e)
+        print("Error Telegram:", e)
 
 def ejecutar_bot_futbol():
     fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
     enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - DATOS REALES VERIFICADOS</b>\n📅 Escaneo activo: <b>{fecha_colombia}</b>")
 
-    partidos = obtener_partidos_reales_espn()
+    partidos = obtener_partidos_reales()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos reales en la agenda de ESPN para hoy/mañana.</i>")
+        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registran partidos restantes para hoy/mañana.</i>")
         return
 
     for p in partidos:
         sim = simular_monte_carlo(p["cuotaLocal"], p["cuotaVisitante"], NUM_SIMULACIONES)
         base_ia = obtener_estructuracion_groq(p)
-        justificacion_gemini = refinamiento_final_gemini(p, sim, base_ia)
+        justificacion = refinamiento_final_gemini(p, sim)
 
         mensaje = (
             f"🏆 <b>{p['liga']}</b>\n"
             f"⚽ <b>{p['local']} vs {p['visitante']}</b>\n"
-            f"⏰ Fecha/Hora: <code>{p['fechaHora']} (Hora COL)</code>\n\n"
-            f"📊 <b>Cuotas 1X2:</b> L: <code>{p['cuotaLocal']}</code> | E: <code>{p['cuotaEmpate']}</code> | V: <code>{p['cuotaVisitante']}</code>\n"
-            f"🎲 <b>Monte Carlo (10,000 sim):</b> L: <code>{sim['prob_local']}%</code> | Both Score: <code>{sim['prob_btts']}%</code>\n\n"
+            f"⏰ <code>{p['fechaHora']} (Hora COL)</code>\n\n"
+            f"📊 <b>Cuotas 1X2:</b> L: {p['cuotaLocal']} | E: {p['cuotaEmpate']} | V: {p['cuotaVisitante']}\n"
+            f"🎲 <b>Monte Carlo:</b> Both Score: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
             f"🔥 <b>PRONÓSTICO PRINCIPAL:</b>\n"
             f"🎯 <b>Ambos Equipos Anotan:</b> <b>{base_ia['ambos_marcan_pronostico']}</b>\n"
-            f"📈 <b>Confianza / Stake:</b> <code>{base_ia['stake']}</code>\n"
-            f"🎲 <b>Probabilidad Estimada:</b> <code>{base_ia['probabilidad_estimada']}</code>\n"
-            f"💡 <i>{justificacion_gemini}</i>\n\n"
-            f"🛡️ <b>OPCIÓN COBERTURA (GOLES):</b>\n"
-            f"🎯 <b>Línea Alternativa:</b> {base_ia['cobertura_goles']}"
+            f"📈 <b>Stake:</b> <code>{base_ia['stake']}</code>\n"
+            f"💡 <i>{justificacion}</i>\n\n"
+            f"🛡️ <b>COBERTURA:</b> {base_ia['cobertura_goles']}"
         )
-
         enviar_mensaje_telegram(mensaje)
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Análisis completado con datos reales.</b> Partidos procesados: {len(partidos)}")
+    enviar_mensaje_telegram(f"✅ <b>Análisis completado.</b> Partidos procesados: {len(partidos)}")
 
 if __name__ == "__main__":
     ejecutar_bot_futbol()
