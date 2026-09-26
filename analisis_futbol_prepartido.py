@@ -23,8 +23,8 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# SECUENCIA RIGUROSA DE RESPALDO DE MODELOS (EVITA ERRORES 404 DE ENPOINT)
-MODELOS_CANDIDATOS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']
+# MODELO ÚNICO OFICIAL VALIDADO
+MODELO_OFICIAL = 'gemini-3.8-flash'
 
 # Esquemas Pydantic estructurados
 class PartidoDetalleSchema(BaseModel):
@@ -157,7 +157,7 @@ def evaluar_partido_completo(lambda_loc, lambda_vis, k_altitud=1.0, k_temperatur
     return simular_monte_carlo(matriz_teorica, num_simulaciones=NUM_SIMULACIONES_MONTECARLO, k_altitud=k_altitud, k_temperatura=k_temperatura, lambda_tot=lambda_loc_adj + lambda_vis_adj)
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN CON RECORRIDO DE MODELOS CANDIDATOS
+# 3. EXTRACCIÓN CON REINTENTO SOBRE GEMINI-3.8-FLASH
 # ---------------------------------------------------------
 def obtener_jornada_completa():
     if not client:
@@ -173,11 +173,12 @@ def obtener_jornada_completa():
         f"Devuelve la agenda completa en formato JSON exacto."
     )
 
-    for modelo in MODELOS_CANDIDATOS:
+    max_reintentos = 3
+    for intento in range(1, max_reintentos + 1):
         try:
-            print(f"Probando conexión con modelo: {modelo}...")
+            print(f"Conectando a {MODELO_OFICIAL} (Intento {intento}/{max_reintentos})...")
             response = client.models.generate_content(
-                model=modelo,
+                model=MODELO_OFICIAL,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -189,7 +190,7 @@ def obtener_jornada_completa():
                 data = json.loads(response.text)
                 partidos_raw = data.get("partidos", [])
                 if partidos_raw:
-                    print(f"¡Éxito! Agenda cargada desde {modelo}. Partidos encontrados: {len(partidos_raw)}")
+                    print(f"¡Éxito! Agenda cargada. Partidos encontrados: {len(partidos_raw)}")
                     
                     partidos_analizados = []
                     for item in partidos_raw:
@@ -212,11 +213,12 @@ def obtener_jornada_completa():
         except Exception as e:
             err_str = str(e)
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                print(f"Aviso en {modelo}: Límite de frecuencia (429). Pausando 8 segundos para reintentar...")
-                time.sleep(8)
+                tiempo_espera = 15 * intento
+                print(f"Límite de frecuencia (429). Esperando {tiempo_espera}s para reintentar en {MODELO_OFICIAL}...")
+                time.sleep(tiempo_espera)
             else:
-                print(f"Aviso en {modelo}: {e}. Evaluando siguiente candidato...")
-            continue
+                print(f"Error en {MODELO_OFICIAL}: {e}")
+                break
 
     return []
 
