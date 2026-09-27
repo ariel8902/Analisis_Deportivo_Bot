@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import math
 import json
@@ -8,9 +7,6 @@ import requests
 from datetime import datetime, timezone, timedelta
 from google import genai
 
-# =========================================================
-# CONFIGURACION Y CREDENCIALES SEGUROS
-# =========================================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
@@ -36,9 +32,6 @@ LIGAS_ESPN = [
     {"slug": "fra.1", "nombre": "🇫🇷 Ligue 1"}
 ]
 
-# =========================================================
-# INGESTA DE PARTIDOS DESDE ESPN
-# =========================================================
 def obtener_partidos_reales():
     lista_partidos = []
     for liga in LIGAS_ESPN:
@@ -85,9 +78,6 @@ def obtener_partidos_reales():
 
     return lista_partidos
 
-# =========================================================
-# MOTOR MONTE CARLO (POISSON)
-# =========================================================
 def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     try:
         prob_loc_impl = 1.0 / float(cuota_loc) if cuota_loc != "N/A" else 0.45
@@ -130,9 +120,6 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
         "prob_btts": round((p_btts / num_sim) * 100, 1)
     }
 
-# =========================================================
-# IA HIBRIDA
-# =========================================================
 def obtener_estructuracion_groq(partido):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -163,9 +150,6 @@ def analisis_tactico_gemini_vip(partido, sim_data):
         print("Aviso cuota Gemini:", e)
         return "Proyección táctica respaldada por alta intensidad ofensiva."
 
-# =========================================================
-# DESPACHO A TELEGRAM
-# =========================================================
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Credenciales no configuradas.")
