@@ -23,6 +23,7 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
+# Ligas principales con endpoints de temporada abiertos y estables
 LIGAS_ESPN = [
     {"slug": "col.1", "nombre": "Liga BetPlay"},
     {"slug": "eng.1", "nombre": "Premier League"},
@@ -35,7 +36,8 @@ LIGAS_ESPN = [
 def obtener_partidos_reales():
     lista_partidos = []
     hoy = datetime.now(ZONA_HORARIA_COLOMBIA)
-    fechas_a_consultar = [(hoy + timedelta(days=i)).strftime("%Y%m%d") for i in range(4)]
+    # Rango operativo real: Hoy y los próximos 7 días para capturar la fecha completa en curso
+    fechas_a_consultar = [(hoy + timedelta(days=i)).strftime("%Y%m%d") for i in range(8)]
 
     for liga in LIGAS_ESPN:
         for f_str in fechas_a_consultar:
@@ -56,7 +58,8 @@ def obtener_partidos_reales():
                             nom_loc = local.get("team", {}).get("displayName", "Local")
                             nom_vis = visita.get("team", {}).get("displayName", "Visitante")
                             
-                            if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
+                            # Filtro estricto para descartar categorías inferiores o partidos no profesionales
+                            if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower() or "women" in nom_loc.lower():
                                 continue
 
                             date_utc_str = ev.get("date", "")
@@ -67,6 +70,7 @@ def obtener_partidos_reales():
                             except Exception:
                                 hora_fmt = "Por definir"
 
+                            # Evitar duplicados en el registro
                             if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
                                 lista_partidos.append({
                                     "liga": liga["nombre"],
@@ -78,19 +82,7 @@ def obtener_partidos_reales():
                                     "cuotaVisitante": "3.20"
                                 })
             except Exception as e:
-                print(f"Error en {liga['nombre']} fecha {f_str}:", e)
-
-    # Respaldo operativo: si la API no arroja eventos por horario, inyectamos un partido de prueba real
-    if not lista_partidos:
-        lista_partidos.append({
-            "liga": "Liga BetPlay (Modo Prueba / Respaldo)",
-            "local": "Millonarios",
-            "visitante": "Junior FC",
-            "fechaHora": hoy.strftime("%d/%m %I:%M %p"),
-            "cuotaLocal": "1.95",
-            "cuotaEmpate": "3.30",
-            "cuotaVisitante": "3.80"
-        })
+                print(f"Error consultando {liga['nombre']} en fecha {f_str}:", e)
 
     return lista_partidos
 
@@ -182,7 +174,7 @@ def ejecutar_bot_futbol():
     partidos = obtener_partidos_reales()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos activos en el rango de la agenda.</i>")
+        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos activos en el calendario oficial para esta ventana de análisis.</i>")
         return
 
     for i, p in enumerate(partidos):
