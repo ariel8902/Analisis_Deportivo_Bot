@@ -23,81 +23,61 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
+LIGAS_ESPN = [
+    {"slug": "col.1", "nombre": "Liga BetPlay"},
+    {"slug": "eng.1", "nombre": "Premier League"},
+    {"slug": "esp.1", "nombre": "LaLiga"},
+    {"slug": "ita.1", "nombre": "Serie A"},
+    {"slug": "ger.1", "nombre": "Bundesliga"},
+    {"slug": "fra.1", "nombre": "Ligue 1"}
+]
+
 def obtener_partidos_reales():
-    """
-    Ingesta robusta desde feeds abiertos de partidos de fútbol y ligas principales.
-    Utiliza repositorios de datos abiertos de JSON fixtures para garantizar estabilidad.
-    """
     lista_partidos = []
     
-    # URL de datos abiertos de fixtures de fútbol para ligas principales y BetPlay
-    url_open_football = "https://raw.githubusercontent.com/openfootball/football.json/master/2025-26/en.1.json"
-    
-    try:
-        res = requests.get(url_open_football, headers=HEADERS_NAV, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            matches = data.get("matches", [])
-            hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-            
-            # Filtramos partidos de la fecha actual o próximos 5 días
-            for match in matches:
-                match_date = match.get("date", "")
-                if match_date >= hoy_str:
-                    team1 = match.get("team1", {}).get("name", "Local")
-                    team2 = match.get("team2", {}).get("name", "Visitante")
+    # Consulta directa a los endpoints principales de las ligas para capturar eventos activos o de la jornada
+    for liga in LIGAS_ESPN:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['slug']}/scoreboard"
+        try:
+            res = requests.get(url, headers=HEADERS_NAV, timeout=8)
+            if res.status_code == 200:
+                data = res.json()
+                events = data.get("events", [])
+                for ev in events:
+                    competitions = ev.get("competitions", [])
+                    if not competitions: continue
                     
-                    if not any(p["local"] == team1 and p["visitante"] == team2 for p in lista_partidos):
-                        lista_partidos.append({
-                            "liga": "Premier League (Open Data)",
-                            "local": team1,
-                            "visitante": team2,
-                            "fechaHora": f"{match_date} 03:00 PM",
-                            "cuotaLocal": "2.10",
-                            "cuotaEmpate": "3.30",
-                            "cuotaVisitante": "3.40"
-                        })
-                if len(lista_partidos) >= 5:  # Top 5 partidos de la fecha
-                    break
-    except Exception as e:
-        print("Aviso en ingesta OpenFootball:", e)
+                    competitors = competitions[0].get("competitors", [])
+                    local = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                    visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                    
+                    if local and visita:
+                        nom_loc = local.get("team", {}).get("displayName", "Local")
+                        nom_vis = visita.get("team", {}).get("displayName", "Visitante")
+                        
+                        if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower() or "women" in nom_loc.lower():
+                            continue
 
-    # Si la fuente abierta está entre jornadas o sin conexion directa, consultamos endpoint alternativo global de ESPN por ID directo de liga
-    if not lista_partidos:
-        ligas_fallback = [
-            {"slug": "col.1", "nombre": "Liga BetPlay"},
-            {"slug": "eng.1", "nombre": "Premier League"},
-            {"slug": "esp.1", "nombre": "LaLiga"}
-        ]
-        for liga in ligas_fallback:
-            url_espn = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['slug']}/scoreboard"
-            try:
-                r = requests.get(url_espn, headers=HEADERS_NAV, timeout=6)
-                if r.status_code == 200:
-                    events = r.json().get("events", [])
-                    for ev in events:
-                        comps = ev.get("competitions", [])
-                        if not comps: continue
-                        competitors = comps[0].get("competitors", [])
-                        local = next((c for c in competitors if c.get("homeAway") == "home"), None)
-                        visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                        if local and visita:
-                            nom_loc = local.get("team", {}).get("displayName", "Local")
-                            nom_vis = visita.get("team", {}).get("displayName", "Visitante")
-                            if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
-                                lista_partidos.append({
-                                    "liga": liga["nombre"],
-                                    "local": nom_loc,
-                                    "visitante": nom_vis,
-                                    "fechaHora": datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%d/%m %I:%M %p"),
-                                    "cuotaLocal": "2.05",
-                                    "cuotaEmpate": "3.20",
-                                    "cuotaVisitante": "3.50"
-                                })
-            except Exception:
-                pass
-            if len(lista_partidos) >= 4:
-                break
+                        date_utc_str = ev.get("date", "")
+                        try:
+                            dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
+                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                            hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
+                        except Exception:
+                            hora_fmt = "Próxima fecha"
+
+                        if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
+                            lista_partidos.append({
+                                "liga": liga["nombre"],
+                                "local": nom_loc,
+                                "visitante": nom_vis,
+                                "fechaHora": hora_fmt,
+                                "cuotaLocal": "2.10",
+                                "cuotaEmpate": "3.20",
+                                "cuotaVisitante": "3.40"
+                            })
+        except Exception as e:
+            print(f"Error en {liga['nombre']}:", e)
 
     return lista_partidos
 
@@ -189,7 +169,7 @@ def ejecutar_bot_futbol():
     partidos = obtener_partidos_reales()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos activos en las fuentes abiertas para esta ventana.</i>")
+        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se encontraron partidos activos en los tableros principales en este momento.</i>")
         return
 
     for i, p in enumerate(partidos):
