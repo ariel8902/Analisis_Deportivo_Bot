@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES SEGUROS
+# 1. CREDENCIALES Y CONFIGURACIÓN
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -36,11 +36,10 @@ LIGAS_ESPN = [
 ]
 
 # ---------------------------------------------------------
-# 2. INGESTA ROBUSTA SIN FILTROS RÍGIDOS
+# 2. INGESTA DE PARTIDOS DESDE ESPN
 # ---------------------------------------------------------
 def obtener_partidos_reales():
     lista_partidos = []
-    # Consultamos sin parámetro de fecha restrictivo para asegurar que devuelva la parrilla activa actual
     for liga in LIGAS_ESPN:
         url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['slug']}/scoreboard"
         try:
@@ -81,7 +80,7 @@ def obtener_partidos_reales():
                                 "cuotaVisitante": "3.20"
                             })
         except Exception as e:
-            print(f"Aviso consultando {liga['nombre']}:", e)
+            print(f"Error en {liga['nombre']}:", e)
 
     return lista_partidos
 
@@ -131,7 +130,7 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. INTELIGENCIA ARTIFICIAL HÍBRIDA (GROQ + GEMINI VIP)
+# 4. INTELIGENCIA ARTIFICIAL HÍBRIDA
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -160,8 +159,8 @@ def analisis_tactico_gemini_vip(partido, sim_data):
         res = client_gemini.models.generate_content(model=MODELO_GEMINI, contents=prompt)
         return res.text.strip() if res.text else "Análisis ofensivo enfocado en transiciones."
     except Exception as e:
-        print("Aviso cuota Gemini protegida:", e)
-        return "Proyección táctica respaldada por alta intensidad ofensiva y solidez en transiciones."
+        print("Aviso cuota Gemini:", e)
+        return "Proyección táctica respaldada por alta intensidad ofensiva."
 
 # ---------------------------------------------------------
 # 5. DESPACHO A TELEGRAM
