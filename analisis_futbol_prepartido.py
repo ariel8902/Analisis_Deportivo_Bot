@@ -18,7 +18,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
-# Cliente de Gemini (Protegido contra límites de cuota)
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
@@ -37,55 +36,52 @@ LIGAS_ESPN = [
 ]
 
 # ---------------------------------------------------------
-# 2. INGESTA DIRECTA DE PARTIDOS REALES
+# 2. INGESTA ROBUSTA SIN FILTROS RÍGIDOS
 # ---------------------------------------------------------
 def obtener_partidos_reales():
-    fecha_hoy = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y%m%d")
-    fecha_manana = (datetime.now(ZONA_HORARIA_COLOMBIA) + timedelta(days=1)).strftime("%Y%m%d")
     lista_partidos = []
-
+    # Consultamos sin parámetro de fecha restrictivo para asegurar que devuelva la parrilla activa actual
     for liga in LIGAS_ESPN:
-        for f in [fecha_hoy, fecha_manana]:
-            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['slug']}/scoreboard?dates={f}"
-            try:
-                res = requests.get(url, headers=HEADERS_NAV, timeout=8)
-                if res.status_code == 200:
-                    events = res.json().get("events", [])
-                    for ev in events:
-                        competitions = ev.get("competitions", [])
-                        if not competitions: continue
+        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['slug']}/scoreboard"
+        try:
+            res = requests.get(url, headers=HEADERS_NAV, timeout=8)
+            if res.status_code == 200:
+                events = res.json().get("events", [])
+                for ev in events:
+                    competitions = ev.get("competitions", [])
+                    if not competitions: continue
+                    
+                    competitors = competitions[0].get("competitors", [])
+                    local = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                    visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                    
+                    if local and visita:
+                        nom_loc = local.get("team", {}).get("displayName", "Local")
+                        nom_vis = visita.get("team", {}).get("displayName", "Visitante")
                         
-                        competitors = competitions[0].get("competitors", [])
-                        local = next((c for c in competitors if c.get("homeAway") == "home"), None)
-                        visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                        
-                        if local and visita:
-                            nom_loc = local.get("team", {}).get("displayName", "Local")
-                            nom_vis = visita.get("team", {}).get("displayName", "Visitante")
-                            
-                            if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
-                                continue
+                        if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
+                            continue
 
-                            date_utc_str = ev.get("date", "")
-                            try:
-                                dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                                dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                                hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
-                            except Exception:
-                                hora_fmt = "Por definir"
+                        date_utc_str = ev.get("date", "")
+                        try:
+                            dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
+                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                            hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
+                        except Exception:
+                            hora_fmt = "Por definir"
 
-                            if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
-                                lista_partidos.append({
-                                    "liga": liga["nombre"],
-                                    "local": nom_loc,
-                                    "visitante": nom_vis,
-                                    "fechaHora": hora_fmt,
-                                    "cuotaLocal": "2.10",
-                                    "cuotaEmpate": "3.10",
-                                    "cuotaVisitante": "3.20"
-                                })
-            except Exception as e:
-                print(f"Aviso consultando {liga['nombre']}:", e)
+                        if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
+                            lista_partidos.append({
+                                "liga": liga["nombre"],
+                                "local": nom_loc,
+                                "visitante": nom_vis,
+                                "fechaHora": hora_fmt,
+                                "cuotaLocal": "2.10",
+                                "cuotaEmpate": "3.10",
+                                "cuotaVisitante": "3.20"
+                            })
+        except Exception as e:
+            print(f"Aviso consultando {liga['nombre']}:", e)
 
     return lista_partidos
 
@@ -135,7 +131,7 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     }
 
 # ---------------------------------------------------------
-# 4. INTeligencia ARTIFICIAL HÍBRIDA (GROQ + GEMINI VIP)
+# 4. INTELIGENCIA ARTIFICIAL HÍBRIDA (GROQ + GEMINI VIP)
 # ---------------------------------------------------------
 def obtener_estructuracion_groq(partido):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -152,7 +148,6 @@ Responde ÚNICAMENTE JSON: {{"ambos_marcan_pronostico": "SÍ" o "NO", "stake": "
     return {"ambos_marcan_pronostico": "SÍ", "stake": "4/5", "probabilidad_estimada": "68%", "cobertura_goles": "Más de 1.5 Goles"}
 
 def analisis_tactico_gemini_vip(partido, sim_data):
-    """Gemini opera de forma selectiva para dar el toque analítico de élite sin agotar la cuota gratuita"""
     if not client_gemini:
         return "Análisis táctico basado en la dinámica ofensiva reciente."
     
@@ -190,12 +185,10 @@ def ejecutar_bot_futbol():
         enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos activos en la agenda.</i>")
         return
 
-    # Seleccionamos el primer partido como el "Estelar VIP" para Gemini, el resto procesa con Groq y Poisson
     for i, p in enumerate(partidos):
         sim = simular_monte_carlo(p["cuotaLocal"], p["cuotaVisitante"], NUM_SIMULACIONES)
         base_ia = obtener_estructuracion_groq(p)
         
-        # Solo el primer partido de la lista recibe el análisis táctico profundo de Gemini (Protección de cuota)
         if i == 0:
             justificacion = analisis_tactico_gemini_vip(p, sim)
             etiqueta_ia = "💎 <i>[Análisis VIP Gemini]</i> " + justificacion
