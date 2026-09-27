@@ -34,47 +34,52 @@ LIGAS_ESPN = [
 
 def obtener_partidos_reales():
     lista_partidos = []
+    # Consultamos hoy y los próximos 3 días para garantizar que agarre toda la fecha activa
+    hoy = datetime.now(ZONA_HORARIA_COLOMBIA)
+    fechas_a_consultar = [(hoy + timedelta(days=i)).strftime("%Y%m%d") for i in range(4)]
+
     for liga in LIGAS_ESPN:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['slug']}/scoreboard"
-        try:
-            res = requests.get(url, headers=HEADERS_NAV, timeout=8)
-            if res.status_code == 200:
-                events = res.json().get("events", [])
-                for ev in events:
-                    competitions = ev.get("competitions", [])
-                    if not competitions: continue
-                    
-                    competitors = competitions[0].get("competitors", [])
-                    local = next((c for c in competitors if c.get("homeAway") == "home"), None)
-                    visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                    
-                    if local and visita:
-                        nom_loc = local.get("team", {}).get("displayName", "Local")
-                        nom_vis = visita.get("team", {}).get("displayName", "Visitante")
+        for f_str in fechas_a_consultar:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{liga['slug']}/scoreboard?dates={f_str}"
+            try:
+                res = requests.get(url, headers=HEADERS_NAV, timeout=8)
+                if res.status_code == 200:
+                    events = res.json().get("events", [])
+                    for ev in events:
+                        competitions = ev.get("competitions", [])
+                        if not competitions: continue
                         
-                        if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
-                            continue
+                        competitors = competitions[0].get("competitors", [])
+                        local = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                        visita = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                        
+                        if local and visita:
+                            nom_loc = local.get("team", {}).get("displayName", "Local")
+                            nom_vis = visita.get("team", {}).get("displayName", "Visitante")
+                            
+                            if "sub-" in nom_loc.lower() or "u20" in nom_loc.lower() or "femenino" in nom_loc.lower():
+                                continue
 
-                        date_utc_str = ev.get("date", "")
-                        try:
-                            dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                            dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
-                            hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
-                        except Exception:
-                            hora_fmt = "Por definir"
+                            date_utc_str = ev.get("date", "")
+                            try:
+                                dt_utc = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
+                                dt_col = dt_utc.astimezone(ZONA_HORARIA_COLOMBIA)
+                                hora_fmt = dt_col.strftime("%d/%m %I:%M %p")
+                            except Exception:
+                                hora_fmt = "Por definir"
 
-                        if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
-                            lista_partidos.append({
-                                "liga": liga["nombre"],
-                                "local": nom_loc,
-                                "visitante": nom_vis,
-                                "fechaHora": hora_fmt,
-                                "cuotaLocal": "2.10",
-                                "cuotaEmpate": "3.10",
-                                "cuotaVisitante": "3.20"
-                            })
-        except Exception as e:
-            print(f"Error en {liga['nombre']}:", e)
+                            if not any(p["local"] == nom_loc and p["visitante"] == nom_vis for p in lista_partidos):
+                                lista_partidos.append({
+                                    "liga": liga["nombre"],
+                                    "local": nom_loc,
+                                    "visitante": nom_vis,
+                                    "fechaHora": hora_fmt,
+                                    "cuotaLocal": "2.10",
+                                    "cuotaEmpate": "3.10",
+                                    "cuotaVisitante": "3.20"
+                                })
+            except Exception as e:
+                print(f"Error en {liga['nombre']} fecha {f_str}:", e)
 
     return lista_partidos
 
@@ -166,7 +171,7 @@ def ejecutar_bot_futbol():
     partidos = obtener_partidos_reales()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos activos en la agenda.</i>")
+        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se registraron partidos activos en el rango de la agenda.</i>")
         return
 
     for i, p in enumerate(partidos):
