@@ -24,12 +24,12 @@ HEADERS_NAV = {
 }
 
 LIGAS_ESPN = [
-    {"slug": "col.1", "nombre": "🇨🇴 Liga BetPlay"},
-    {"slug": "eng.1", "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League"},
-    {"slug": "esp.1", "nombre": "🇪🇸 LaLiga"},
-    {"slug": "ita.1", "nombre": "🇮🇹 Serie A"},
-    {"slug": "ger.1", "nombre": "🇩🇪 Bundesliga"},
-    {"slug": "fra.1", "nombre": "🇫🇷 Ligue 1"}
+    {"slug": "col.1", "nombre": "Liga BetPlay"},
+    {"slug": "eng.1", "nombre": "Premier League"},
+    {"slug": "esp.1", "nombre": "LaLiga"},
+    {"slug": "ita.1", "nombre": "Serie A"},
+    {"slug": "ger.1", "nombre": "Bundesliga"},
+    {"slug": "fra.1", "nombre": "Ligue 1"}
 ]
 
 def obtener_partidos_reales():
@@ -125,30 +125,30 @@ def obtener_estructuracion_groq(partido):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     prompt = f"""Estructura cuantitativa para partido REAL:
 Liga: {partido['liga']} | Partido: {partido['local']} vs {partido['visitante']}
-Responde ÚNICAMENTE JSON: {{"ambos_marcan_pronostico": "SÍ" o "NO", "stake": "4/5", "probabilidad_estimada": "%", "cobertura_goles": "Más de 1.5 Goles"}}"""
+Responde UNICAMENTE JSON: {{"ambos_marcan_pronostico": "SI" o "NO", "stake": "4/5", "probabilidad_estimada": "%", "cobertura_goles": "Mas de 1.5 Goles"}}"""
     try:
         res = requests.post(url, headers=headers, json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}, timeout=8)
         if res.status_code == 200:
             return json.loads(res.json()["choices"][0]["message"]["content"])
     except:
         pass
-    return {"ambos_marcan_pronostico": "SÍ", "stake": "4/5", "probabilidad_estimada": "68%", "cobertura_goles": "Más de 1.5 Goles"}
+    return {"ambos_marcan_pronostico": "SI", "stake": "4/5", "probabilidad_estimada": "68%", "cobertura_goles": "Mas de 1.5 Goles"}
 
 def analisis_tactico_gemini_vip(partido, sim_data):
     if not client_gemini:
-        return "Análisis táctico basado en la dinámica ofensiva reciente."
+        return "Analisis tactico basado en la dinamica ofensiva reciente."
     
     prompt = (
-        f"Actúa como analista jefe de fútbol. Analiza el partido estelar {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
-        f"Métricas del modelo de Poisson: Ambos Anotan: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
-        f"Redacta una validación táctica profunda de máximo 2 oraciones en español."
+        f"Actua como analista jefe de futbol. Analiza el partido estelar {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
+        f"Metricas del modelo de Poisson: Ambos Anotan: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
+        f"Redacta una validacion tactica profunda de maximo 2 oraciones en espanol."
     )
     try:
         res = client_gemini.models.generate_content(model=MODELO_GEMINI, contents=prompt)
-        return res.text.strip() if res.text else "Análisis ofensivo enfocado en transiciones."
+        return res.text.strip() if res.text else "Analisis ofensivo enfocado en transiciones."
     except Exception as e:
         print("Aviso cuota Gemini:", e)
-        return "Proyección táctica respaldada por alta intensidad ofensiva."
+        return "Proyeccion tactica respaldada por alta intensidad ofensiva."
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -161,7 +161,7 @@ def enviar_mensaje_telegram(texto):
 
 def ejecutar_bot_futbol():
     fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - POISSON & IA HÍBRIDA</b>\n📅 Escaneo activo: <b>{fecha_colombia}</b>")
+    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - POISSON & IA HIBRIDA</b>\n📅 Escaneo activo: <b>{fecha_colombia}</b>")
 
     partidos = obtener_partidos_reales()
 
@@ -175,10 +175,10 @@ def ejecutar_bot_futbol():
         
         if i == 0:
             justificacion = analisis_tactico_gemini_vip(p, sim)
-            etiqueta_ia = "💎 <i>[Análisis VIP Gemini]</i> " + justificacion
+            etiqueta_ia = "💎 <i>[Analisis VIP Gemini]</i> " + justificacion
         else:
-            justificacion = f"Trámite proyectado con alta probabilidad de goles según modelo cuantitativo ({sim['prob_btts']}% BTTS)."
-            etiqueta_ia = "⚡ <i>[Análisis Cuantitativo Groq]</i> " + justificacion
+            justificacion = f"Tramite proyectado con alta probabilidad de goles segun modelo cuantitativo ({sim['prob_btts']}% BTTS)."
+            etiqueta_ia = "⚡ <i>[Analisis Cuantitativo Groq]</i> " + justificacion
 
         mensaje = (
             f"🏆 <b>{p['liga']}</b>\n"
@@ -186,7 +186,7 @@ def ejecutar_bot_futbol():
             f"⏰ Fecha/Hora: <code>{p['fechaHora']} (Hora COL)</code>\n\n"
             f"📊 <b>Cuotas 1X2:</b> L: <code>{p['cuotaLocal']}</code> | E: <code>{p['cuotaEmpate']}</code> | V: <code>{p['cuotaVisitante']}</code>\n"
             f"🎲 <b>Monte Carlo (10,000 sim):</b> Both Score: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
-            f"🔥 <b>PRONÓSTICO PRINCIPAL:</b>\n"
+            f"🔥 <b>PRONOSTICO PRINCIPAL:</b>\n"
             f"🎯 <b>Ambos Equipos Anotan:</b> <b>{base_ia['ambos_marcan_pronostico']}</b>\n"
             f"📈 <b>Confianza / Stake:</b> <code>{base_ia['stake']}</code>\n"
             f"💡 {etiqueta_ia}\n\n"
@@ -196,7 +196,7 @@ def ejecutar_bot_futbol():
         enviar_mensaje_telegram(mensaje)
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Análisis completado exitosamente.</b> Partidos procesados: {len(partidos)}")
+    enviar_mensaje_telegram(f"✅ <b>Analisis completado exitosamente.</b> Partidos procesados: {len(partidos)}")
 
 if __name__ == "__main__":
     ejecutar_bot_futbol()
