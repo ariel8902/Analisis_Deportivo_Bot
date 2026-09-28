@@ -41,15 +41,12 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-# --- 2. INGESTA PROFESIONAL DESDE API-FOOTBALL OFICIAL ---
+# --- 2. INGESTA PROFESIONAL POR FECHA EXACTA ---
 def obtener_partidos_vigentes():
     lista_partidos_validados = []
     hoy_dt = datetime.now(ZONA_HORARIA_COLOMBIA)
-    hoy_str = hoy_dt.strftime("%Y-%m-%d")
-    limite_dt = hoy_dt + timedelta(days=7)
-    limite_str = limite_dt.strftime("%Y-%m-%d")
 
-    print(f"🔍 Consultando API-Football Oficial para partidos vigentes entre {hoy_str} y {limite_str}...")
+    print("🔍 Consultando API-Football Oficial por fecha exacta para forzar la detección...")
 
     if not APISPORTS_KEY:
         print("⚠️ Aviso: APISPORTS_KEY no está configurada en los secretos de GitHub.")
@@ -60,41 +57,47 @@ def obtener_partidos_vigentes():
         "x-apisports-key": APISPORTS_KEY
     }
 
-    for liga in LIGAS_CONFIGURADAS:
-        params = {
-            "league": liga["id_liga"],
-            "season": liga["temporada"],
-            "from": hoy_str,
-            "to": limite_str
-        }
-        try:
-            response = requests.get(url_api, headers=headers_api, params=params, timeout=10)
-            if response.status_code != 200:
-                print(f"Error HTTP {response.status_code} para {liga['nombre']}")
-                continue
-            
-            data = response.json()
-            fixtures = data.get("response", [])
-            
-            for fixture in fixtures:
-                teams = fixture.get("teams", {})
-                home = teams.get("home", {}).get("name", "Local")
-                away = teams.get("away", {}).get("name", "Visitante")
-                
-                fixture_date = fixture.get("fixture", {}).get("date", "")
-                fecha_formateada = fixture_date.replace("T", " ")[:16] if fixture_date else "Próximamente"
+    # Consultamos hoy y los próximos 2 días de forma individual para evitar filtros de rangos
+    for i in range(3):
+        dia_consulta = hoy_dt + timedelta(days=i)
+        fecha_str = dia_consulta.strftime("%Y-%m-%d")
 
-                lista_partidos_validados.append({
-                    "liga": liga["nombre"],
-                    "local": home,
-                    "visitante": away,
-                    "fechaHora": f"{fecha_formateada} (Vigente)",
-                    "cuotaLocal": "2.10",
-                    "cuotaEmpate": "3.40",
-                    "cuotaVisitante": "3.20"
-                })
-        except Exception as e:
-            print(f"Aviso consultando API para {liga['nombre']}:", e)
+        for liga in LIGAS_CONFIGURADAS:
+            params = {
+                "league": liga["id_liga"],
+                "season": liga["temporada"],
+                "date": fecha_str
+            }
+            try:
+                response = requests.get(url_api, headers=headers_api, params=params, timeout=10)
+                if response.status_code != 200:
+                    continue
+                
+                data = response.json()
+                fixtures = data.get("response", [])
+                
+                for fixture in fixtures:
+                    teams = fixture.get("teams", {})
+                    home = teams.get("home", {}).get("name", "Local")
+                    away = teams.get("away", {}).get("name", "Visitante")
+                    
+                    fixture_date = fixture.get("fixture", {}).get("date", "")
+                    fecha_formateada = fixture_date.replace("T", " ")[:16] if fixture_date else fecha_str
+
+                    partido_dict = {
+                        "liga": liga["nombre"],
+                        "local": home,
+                        "visitante": away,
+                        "fechaHora": f"{fecha_formateada} (Vigente)",
+                        "cuotaLocal": "2.10",
+                        "cuotaEmpate": "3.40",
+                        "cuotaVisitante": "3.20"
+                    }
+                    if partido_dict not in lista_partidos_validados:
+                        lista_partidos_validados.append(partido_dict)
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"Aviso consultando API para {liga['nombre']}:", e)
 
     return lista_partidos_validados
 
@@ -212,7 +215,7 @@ def ejecutar_analisis_principal():
     if not partidos:
         aviso_vacio = (
             f"🛡️ <b>REPORTE DE JORNADA VIGENTE</b>\n\n"
-            f"📊 <i>No se encontraron partidos programados para los próximos 7 días en las ligas configuradas. "
+            f"📊 <i>No se encontraron partidos programados para los próximos días en las ligas configuradas. "
             f"El sistema opera con total transparencia: se omiten registros históricos para evitar análisis obsoletos.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
