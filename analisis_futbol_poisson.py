@@ -24,18 +24,23 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
+# Repositorios de fuentes abiertas
 LIGAS_ABIERTAS = [
     {
         "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2024-25/en.1.json"
+        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/en.1.json"
     },
     {
         "nombre": "🇪🇸 LaLiga",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2024-25/es.1.json"
+        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/es.1.json"
     },
     {
         "nombre": "🇮🇹 Serie A",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2024-25/it.1.json"
+        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/it.1.json"
+    },
+    {
+        "nombre": "🇩🇪 Bundesliga",
+        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/de.1.json"
     }
 ]
 
@@ -54,58 +59,56 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-def obtener_partidos_jornada_abierta():
+def obtener_partidos_vigentes():
     """
-    Extracción robusta extrayendo la fecha real exacta directamente desde los metadatos del JSON.
+    Filtro estricto: Solo acepta partidos cuya fecha sea igual o posterior al día de hoy,
+    rechazando tajantemente cualquier dato histórico o del pasado.
     """
-    lista_partidos_total = []
+    lista_partidos_validados = []
+    
+    # Fecha actual real de referencia (Ej: 2026-09-27)
+    hoy_dt = datetime.now(ZONA_HORARIA_COLOMBIA)
+    hoy_str = hoy_dt.strftime("%Y-%m-%d")
+    
+    # Ventana operativa: hoy y los próximos 7 días
+    limite_dt = hoy_dt + timedelta(days=7)
+    limite_str = limite_dt.strftime("%Y-%m-%d")
+
+    print(f"🔍 Buscando partidos vigentes entre {hoy_str} y {limite_str}...")
 
     for liga in LIGAS_ABIERTAS:
         try:
             response = requests.get(liga["url"], headers=HEADERS_NAV, timeout=8)
-            if response.status_code == 200:
-                data = response.json()
-                matches = data.get("matches", [])
-                if matches:
-                    # Seleccionamos un partido y extraemos su fecha real del JSON
-                    m = matches[len(matches) // 2]
-                    fecha_real = m.get("date", "Fecha por confirmar")
-                    
-                    t1_raw = m.get("team1", "Local")
+            if response.status_code != 200:
+                continue
+            
+            data = response.json()
+            matches = data.get("matches", [])
+            
+            for match in matches:
+                fecha_partido = match.get("date", "")
+                
+                # FILTRO ESTRICTO: La fecha del partido debe estar dentro de la semana vigente
+                if hoy_str <= fecha_partido <= limite_str:
+                    t1_raw = match.get("team1", "Local")
                     team1 = t1_raw.get("name", "Local") if isinstance(t1_raw, dict) else str(t1_raw)
                     
-                    t2_raw = m.get("team2", "Visitante")
+                    t2_raw = match.get("team2", "Visitante")
                     team2 = t2_raw.get("name", "Visitante") if isinstance(t2_raw, dict) else str(t2_raw)
                     
-                    lista_partidos_total.append({
+                    lista_partidos_validados.append({
                         "liga": liga["nombre"],
                         "local": team1,
                         "visitante": team2,
-                        "fechaHora": f"{fecha_real} (Oficial)",
+                        "fechaHora": f"{fecha_partido} (Vigente)",
                         "cuotaLocal": "2.10",
                         "cuotaEmpate": "3.40",
                         "cuotaVisitante": "3.20"
                     })
-                    if len(lista_partidos_total) >= 3:
-                        break
         except Exception as e:
-            print(f"Aviso en fuente {liga['nombre']}:", e)
+            print(f"Aviso consultando {liga['nombre']}:", e)
 
-    if not lista_partidos_total:
-        hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-        lista_partidos_total = [
-            {
-                "liga": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
-                "local": "Manchester City",
-                "visitante": "Arsenal",
-                "fechaHora": f"{hoy_str} 02:00 PM",
-                "cuotaLocal": "2.05",
-                "cuotaEmpate": "3.40",
-                "cuotaVisitante": "3.50"
-            }
-        ]
-
-    return lista_partidos_total
+    return lista_partidos_validados
 
 def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     try:
@@ -200,7 +203,6 @@ def analisis_tactico_gemini_vip(partido, sim_data):
         f"Redacta una validación táctica profunda, técnica y directa en español de máximo 2 oraciones."
     )
     
-    # Sistema de reintentos con respaldo para evitar errores 503 por alta demanda
     for intento in range(2):
         try:
             res = client_gemini.models.generate_content(model=MODELO_GEMINI, contents=prompt)
@@ -214,19 +216,26 @@ def analisis_tactico_gemini_vip(partido, sim_data):
 
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"🚀 Iniciando escaneo definitivo con fechas reales: {fecha_hoy_str}")
-    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - FECHAS REALES</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    print(f"🚀 Iniciando escaneo con filtro estricto de partidos vigentes: {fecha_hoy_str}")
+    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - FILTRO VIGENTE</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
 
-    partidos = obtener_partidos_jornada_abierta()
+    partidos = obtener_partidos_vigentes()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No hay partidos disponibles.</i>")
+        # Honestidad absoluta: si no hay partidos reales en la semana, se informa claramente sin engaños
+        aviso_vacio = (
+            f"🛡️ <b>REPORTE DE JORNADA VIGENTE</b>\n\n"
+            f"📊 <i>No se encontraron partidos programados para los próximos 7 días en las fuentes abiertas consultadas. "
+            f"El sistema opera con total transparencia: se omiten registros históricos para evitar análisis obsoletos.</i>"
+        )
+        enviar_mensaje_telegram(aviso_vacio)
+        print("⚠️ No hay partidos vigentes en la ventana actual. Reporte enviado a Telegram con honestidad.")
         return
 
     partidos_enviados = 0
 
     for i, partido in enumerate(partidos):
-        print(f"⚽ Procesando: {partido['local']} vs {partido['visitante']} ({partido['fechaHora']})")
+        print(f"⚽ Procesando partido vigente: {partido['local']} vs {partido['visitante']} ({partido['fechaHora']})")
         
         sim = simular_monte_carlo(partido['cuotaLocal'], partido['cuotaVisitante'], NUM_SIMULACIONES)
         base_ia = generar_analisis_btts(partido)
@@ -259,7 +268,7 @@ def ejecutar_analisis_principal():
         
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Partidos analizados y enviados: {partidos_enviados}")
+    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Partidos vigentes analizados y enviados: {partidos_enviados}")
     print(f"✅ Proceso completado. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
