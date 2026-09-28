@@ -62,11 +62,9 @@ def enviar_mensaje_telegram(texto):
 
 def obtener_partidos_jornada_abierta():
     """
-    Extracción mediante repositorios JSON abiertos. Si no hay partidos en la fecha exacta,
-    toma el siguiente encuentro disponible del calendario para garantizar operatividad y pruebas reales.
+    Extracción robusta adaptada para leer equipos tanto en formato diccionario como de texto plano.
     """
     lista_partidos_total = []
-    hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
 
     for liga in LIGAS_ABIERTAS:
         try:
@@ -77,17 +75,16 @@ def obtener_partidos_jornada_abierta():
             data = response.json()
             matches = data.get("matches", [])
             
-            # Buscamos primero partidos desde hoy en adelante
-            partidos_futuros = [m for m in matches if m.get("date", "") >= hoy_str]
-            
-            # Si la temporada en el archivo JSON ya pasó o no hay futuros cercanos, tomamos los últimos disponibles para prueba
-            catalogo = partidos_futuros if partidos_futuros else matches
-            
             partidos_liga = 0
-            for match in catalogo[:3]:  # Tomamos hasta 3 partidos reales de la cartelera
+            for match in matches[:3]:  # Tomamos los primeros partidos disponibles del calendario
                 match_date = match.get("date", "Próxima fecha")
-                team1 = match.get("team1", {}).get("name", "Local")
-                team2 = match.get("team2", {}).get("name", "Visitante")
+                
+                # Manejo seguro por si el equipo viene como string o como diccionario
+                t1_raw = match.get("team1", "Local")
+                team1 = t1_raw.get("name", "Local") if isinstance(t1_raw, dict) else str(t1_raw)
+                
+                t2_raw = match.get("team2", "Visitante")
+                team2 = t2_raw.get("name", "Visitante") if isinstance(t2_raw, dict) else str(t2_raw)
                 
                 lista_partidos_total.append({
                     "liga": liga["nombre"],
