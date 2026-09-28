@@ -7,7 +7,7 @@ import requests
 from datetime import datetime, timezone, timedelta
 from google import genai
 
-# --- CONFIGURACIÓN DE CREDENCIALES Y ENTORNO ---
+# --- 1. CONFIGURACIÓN DE CREDENCIALES Y ENTORNO ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
@@ -16,6 +16,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
+# Inicialización segura de Gemini para la validación táctica VIP
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
@@ -24,24 +25,13 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
-# Repositorios de fuentes abiertas
+# Repositorios JSON abiertos de las ligas principales (Incluyendo Liga BetPlay)
 LIGAS_ABIERTAS = [
-    {
-        "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/en.1.json"
-    },
-    {
-        "nombre": "🇪🇸 LaLiga",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/es.1.json"
-    },
-    {
-        "nombre": "🇮🇹 Serie A",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/it.1.json"
-    },
-    {
-        "nombre": "🇩🇪 Bundesliga",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/de.1.json"
-    }
+    { "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/en.1.json" },
+    { "nombre": "🇪🇸 LaLiga", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/es.1.json" },
+    { "nombre": "🇮🇹 Serie A", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/it.1.json" },
+    { "nombre": "🇩🇪 Bundesliga", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/de.1.json" },
+    { "nombre": "🇨🇴 Liga BetPlay", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/co.1.json" }
 ]
 
 def enviar_mensaje_telegram(texto):
@@ -49,28 +39,17 @@ def enviar_mensaje_telegram(texto):
         print("Error: Credenciales de Telegram no configuradas.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": texto,
-        "parse_mode": "HTML"
-    }
+    payload = { "chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML" }
     try:
         requests.post(url, json=payload, timeout=8)
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
+# --- 2. INGESTA Y FILTRO ESTRICTO DE PARTIDOS VIGENTES ---
 def obtener_partidos_vigentes():
-    """
-    Filtro estricto: Solo acepta partidos cuya fecha sea igual o posterior al día de hoy,
-    rechazando tajantemente cualquier dato histórico o del pasado.
-    """
     lista_partidos_validados = []
-    
-    # Fecha actual real de referencia (Ej: 2026-09-27)
     hoy_dt = datetime.now(ZONA_HORARIA_COLOMBIA)
     hoy_str = hoy_dt.strftime("%Y-%m-%d")
-    
-    # Ventana operativa: hoy y los próximos 7 días
     limite_dt = hoy_dt + timedelta(days=7)
     limite_str = limite_dt.strftime("%Y-%m-%d")
 
@@ -87,8 +66,6 @@ def obtener_partidos_vigentes():
             
             for match in matches:
                 fecha_partido = match.get("date", "")
-                
-                # FILTRO ESTRICTO: La fecha del partido debe estar dentro de la semana vigente
                 if hoy_str <= fecha_partido <= limite_str:
                     t1_raw = match.get("team1", "Local")
                     team1 = t1_raw.get("name", "Local") if isinstance(t1_raw, dict) else str(t1_raw)
@@ -110,6 +87,7 @@ def obtener_partidos_vigentes():
 
     return lista_partidos_validados
 
+# --- 3. MOTOR ESTOCÁSTICO DE POISSON / MONTE CARLO ---
 def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     try:
         prob_loc_impl = 1.0 / float(cuota_loc) if cuota_loc != "N/A" else 0.45
@@ -152,9 +130,10 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
         "prob_btts": round((p_btts / num_sim) * 100, 1)
     }
 
+# --- 4. CEREBRO INTELIGENTE: GROQ & GEMINI VIP ---
 def generar_analisis_btts(partido):
     url_api = "https://api.groq.com/openai/v1/chat/completions"
-    prompt_text = f"""Actúa como un cuantitativo y analista experto de fútbol especializado en el mercado "AMBOS EQUIPOS ANOTAN" (BTTS).
+    prompt_text = f"""Actúa como un cuantitativo y analista experto de fútbol especializado in el mercado "AMBOS EQUIPOS ANOTAN" (BTTS).
 Responde ÚNICAMENTE con un objeto JSON válido (sin texto libre ni markdown):
 {{
   "ambos_marcan_pronostico": "SÍ" o "NO",
@@ -168,10 +147,7 @@ DATOS:
 - Partido: {partido['local']} vs {partido['visitante']}
 - Cuotas 1X2: Local ({partido['cuotaLocal']}) | Empate ({partido['cuotaEmpate']}) | Visitante ({partido['cuotaVisitante']})"""
 
-    headers = {
-        "Authorization": "Bearer " + GROQ_API_KEY,
-        "Content-Type": "application/json"
-    }
+    headers = { "Authorization": "Bearer " + GROQ_API_KEY, "Content-Type": "application/json" }
     payload = {
         "model": "llama-3.1-8b-instant",
         "messages": [{"role": "user", "content": prompt_text}],
@@ -214,6 +190,7 @@ def analisis_tactico_gemini_vip(partido, sim_data):
             
     return "Proyección táctica respaldada por alta intensidad en transiciones ofensivas."
 
+# --- 5. ORQUESTADOR PRINCIPAL ---
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
     print(f"🚀 Iniciando escaneo con filtro estricto de partidos vigentes: {fecha_hoy_str}")
@@ -222,7 +199,6 @@ def ejecutar_analisis_principal():
     partidos = obtener_partidos_vigentes()
 
     if not partidos:
-        # Honestidad absoluta: si no hay partidos reales en la semana, se informa claramente sin engaños
         aviso_vacio = (
             f"🛡️ <b>REPORTE DE JORNADA VIGENTE</b>\n\n"
             f"📊 <i>No se encontraron partidos programados para los próximos 7 días en las fuentes abiertas consultadas. "
