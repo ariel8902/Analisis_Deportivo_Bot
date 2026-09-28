@@ -12,6 +12,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+APISPORTS_KEY = os.getenv("APISPORTS_KEY")  # Tu llave directa de api-football.com
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
@@ -25,13 +26,13 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
-# Repositorios JSON abiertos de las ligas principales (Incluyendo Liga BetPlay)
-LIGAS_ABIERTAS = [
-    { "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/en.1.json" },
-    { "nombre": "🇪🇸 LaLiga", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/es.1.json" },
-    { "nombre": "🇮🇹 Serie A", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/it.1.json" },
-    { "nombre": "🇩🇪 Bundesliga", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/de.1.json" },
-    { "nombre": "🇨🇴 Liga BetPlay", "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/co.1.json" }
+# IDs oficiales en API-Football (Colombia: 239, Premier: 39, LaLiga: 140, Serie A: 135, Bundesliga: 78)
+LIGAS_CONFIGURADAS = [
+    { "nombre": "🇨🇴 Liga BetPlay", "id_liga": 239, "temporada": 2026 },
+    { "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "id_liga": 39, "temporada": 2026 },
+    { "nombre": "🇪🇸 LaLiga", "id_liga": 140, "temporada": 2026 },
+    { "nombre": "🇮🇹 Serie A", "id_liga": 135, "temporada": 2026 },
+    { "nombre": "🇩🇪 Bundesliga", "id_liga": 78, "temporada": 2026 }
 ]
 
 def enviar_mensaje_telegram(texto):
@@ -45,7 +46,7 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-# --- 2. INGESTA Y FILTRO ESTRICTO DE PARTIDOS VIGENTES ---
+# --- 2. INGESTA PROFESIONAL DESDE API-FOOTBALL OFICIAL ---
 def obtener_partidos_vigentes():
     lista_partidos_validados = []
     hoy_dt = datetime.now(ZONA_HORARIA_COLOMBIA)
@@ -53,37 +54,52 @@ def obtener_partidos_vigentes():
     limite_dt = hoy_dt + timedelta(days=7)
     limite_str = limite_dt.strftime("%Y-%m-%d")
 
-    print(f"🔍 Buscando partidos vigentes entre {hoy_str} y {limite_str}...")
+    print(f"🔍 Consultando API-Football Oficial para partidos vigentes entre {hoy_str} y {limite_str}...")
 
-    for liga in LIGAS_ABIERTAS:
+    if not APISPORTS_KEY:
+        print("⚠️ Aviso: APISPORTS_KEY no está configurada en los secretos de GitHub.")
+        return []
+
+    url_api = "https://v3.football.api-sports.io/fixtures"
+    headers_api = {
+        "x-apisports-key": APISPORTS_KEY
+    }
+
+    for liga in LIGAS_CONFIGURADAS:
+        params = {
+            "league": liga["id_liga"],
+            "season": liga["temporada"],
+            "from": hoy_str,
+            "to": limite_str
+        }
         try:
-            response = requests.get(liga["url"], headers=HEADERS_NAV, timeout=8)
+            response = requests.get(url_api, headers=headers_api, params=params, timeout=10)
             if response.status_code != 200:
+                print(f"Error HTTP {response.status_code} para {liga['nombre']}")
                 continue
             
             data = response.json()
-            matches = data.get("matches", [])
+            fixtures = data.get("response", [])
             
-            for match in matches:
-                fecha_partido = match.get("date", "")
-                if hoy_str <= fecha_partido <= limite_str:
-                    t1_raw = match.get("team1", "Local")
-                    team1 = t1_raw.get("name", "Local") if isinstance(t1_raw, dict) else str(t1_raw)
-                    
-                    t2_raw = match.get("team2", "Visitante")
-                    team2 = t2_raw.get("name", "Visitante") if isinstance(t2_raw, dict) else str(t2_raw)
-                    
-                    lista_partidos_validados.append({
-                        "liga": liga["nombre"],
-                        "local": team1,
-                        "visitante": team2,
-                        "fechaHora": f"{fecha_partido} (Vigente)",
-                        "cuotaLocal": "2.10",
-                        "cuotaEmpate": "3.40",
-                        "cuotaVisitante": "3.20"
-                    })
+            for fixture in fixtures:
+                teams = fixture.get("teams", {})
+                home = teams.get("home", {}).get("name", "Local")
+                away = teams.get("away", {}).get("name", "Visitante")
+                
+                fixture_date = fixture.get("fixture", {}).get("date", "")
+                fecha_formateada = fixture_date.replace("T", " ")[:16] if fixture_date else "Próximamente"
+
+                lista_partidos_validados.append({
+                    "liga": liga["nombre"],
+                    "local": home,
+                    "visitante": away,
+                    "fechaHora": f"{fecha_formateada} (Vigente)",
+                    "cuotaLocal": "2.10",
+                    "cuotaEmpate": "3.40",
+                    "cuotaVisitante": "3.20"
+                })
         except Exception as e:
-            print(f"Aviso consultando {liga['nombre']}:", e)
+            print(f"Aviso consultando API para {liga['nombre']}:", e)
 
     return lista_partidos_validados
 
@@ -193,15 +209,15 @@ def analisis_tactico_gemini_vip(partido, sim_data):
 # --- 5. ORQUESTADOR PRINCIPAL ---
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"🚀 Iniciando escaneo con filtro estricto de partidos vigentes: {fecha_hoy_str}")
-    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - FILTRO VIGENTE</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    print(f"🚀 Iniciando escaneo oficial API-Sports: {fecha_hoy_str}")
+    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - API OFICIAL</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
 
     partidos = obtener_partidos_vigentes()
 
     if not partidos:
         aviso_vacio = (
             f"🛡️ <b>REPORTE DE JORNADA VIGENTE</b>\n\n"
-            f"📊 <i>No se encontraron partidos programados para los próximos 7 días en las fuentes abiertas consultadas. "
+            f"📊 <i>No se encontraron partidos programados para los próximos 7 días en las ligas configuradas. "
             f"El sistema opera con total transparencia: se omiten registros históricos para evitar análisis obsoletos.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
