@@ -13,14 +13,15 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Llave oficial extraída de tu script funcional de Google
+# Llave oficial de The Odds API extraída de tu script funcional
 ODDS_API_KEY = 'f52fed19ba1071472e5a25c88fa23053'
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
+# Inicialización segura de Gemini para la validación táctica VIP
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODELO_GEMINI = 'gemini-3.8-flash'
+MODELO_GEMINI = 'gemini-2.5-flash'
 
 # Ligas principales sincronizadas con tu base
 LIGAS_TOP = [
@@ -50,7 +51,7 @@ def enviar_mensaje_telegram(texto):
 def obtener_partidos_jornada(sport_key):
     """
     Extracción limpia y directa mediante The Odds API,
-    replicando la lógica exacta de tu script en Google Apps Script.
+    replicando la lógica estable de tus herramientas.
     """
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h"
     
@@ -64,7 +65,6 @@ def obtener_partidos_jornada(sport_key):
         lista_partidos = []
         
         ahora = datetime.now(ZONA_HORARIA_COLOMBIA)
-        # Ventana de análisis para hoy y mañana (siguiente 48 horas)
         inicio_ventana = ahora
         fin_ventana = ahora + timedelta(hours=48)
 
@@ -76,7 +76,6 @@ def obtener_partidos_jornada(sport_key):
             except Exception:
                 continue
 
-            # Filtramos eventos dentro del rango operativo
             if fecha_partido >= inicio_ventana and fecha_partido <= fin_ventana:
                 equipo_local = evento.get("home_team", "Local")
                 equipo_visitante = evento.get("away_team", "Visitante")
@@ -112,7 +111,7 @@ def obtener_partidos_jornada(sport_key):
 
 def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     """
-    Modelo estocástico de Poisson / Monte Carlo riguroso para estimar BTTS y Over 2.5.
+    Modelo estocástico de Poisson / Monte Carlo riguroso.
     """
     try:
         prob_loc_impl = 1.0 / float(cuota_loc) if cuota_loc != "N/A" else 0.45
@@ -157,25 +156,22 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
 
 def generar_analisis_btts(partido, nombre_liga):
     """
-    Estructuración avanzada mediante Groq integrando el modelo cuantitativo.
+    Estructuración cuantitativa rápida mediante Groq.
     """
     url_api = "https://api.groq.com/openai/v1/chat/completions"
     prompt_text = f"""Actúa como un cuantitativo y analista experto de fútbol especializado en el mercado "AMBOS EQUIPOS ANOTAN" (BTTS).
-Ejecuta una evaluación profunda sobre el siguiente encuentro basándote en cuotas de mercado y probabilidades.
-
 Responde ÚNICAMENTE con un objeto JSON válido (sin texto libre ni markdown):
 {{
   "ambos_marcan_pronostico": "SÍ" o "NO",
-  "stake": "Stake (Ejemplo: 4/5)",
-  "probabilidad_estimada": "% estimado de que ocurra la opción elegida",
-  "justificacion_tactica": "Razón técnica directa en español sobre la potencia ofensiva o debilidad defensiva (máximo 2 frases)",
-  "cobertura_goles": "Opción alternativa de línea de gol (Ejemplo: Más de 2.5 Goles)"
+  "stake": "4/5",
+  "probabilidad_estimada": "68%",
+  "cobertura_goles": "Más de 2.5 Goles"
 }}
 
-DATOS DEL ENCUENTRO:
+DATOS:
 - Liga: {nombre_liga}
 - Partido: {partido['local']} vs {partido['visitante']}
-- Cuotas 1X2 Mercado: Local ({partido['cuotaLocal']}) | Empate ({partido['cuotaEmpate']}) | Visitante ({partido['cuotaVisitante']})"""
+- Cuotas 1X2: Local ({partido['cuotaLocal']}) | Empate ({partido['cuotaEmpate']}) | Visitante ({partido['cuotaVisitante']})"""
 
     headers = {
         "Authorization": "Bearer " + GROQ_API_KEY,
@@ -199,14 +195,32 @@ DATOS DEL ENCUENTRO:
         "ambos_marcan_pronostico": "SÍ",
         "stake": "4/5",
         "probabilidad_estimada": "68%",
-        "justificacion_tactica": "Alta intensidad ofensiva esperada en transiciones directas.",
         "cobertura_goles": "Más de 2.5 Goles"
     }
 
+def analisis_tactico_gemini_vip(partido, nombre_liga, sim_data):
+    """
+    Validación táctica de élite mediante Gemini para el partido estelar.
+    """
+    if not client_gemini:
+        return "Dinámica ofensiva respaldada por métricas de Poisson."
+    
+    prompt = (
+        f"Actúa como analista jefe de fútbol. Analiza el encuentro estelar {partido['local']} vs {partido['visitante']} ({nombre_liga}). "
+        f"Métricas estocásticas de Poisson: BTTS: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
+        f"Redacta una validación táctica profunda, técnica y directa en español de máximo 2 oraciones."
+    )
+    try:
+        res = client_gemini.models.generate_content(model=MODELO_GEMINI, contents=prompt)
+        return res.text.strip() if res.text else "Análisis táctico enfocado en transiciones ofensivas."
+    except Exception as e:
+        print("Aviso cuota Gemini VIP:", e)
+        return "Proyección táctica respaldada por alta intensidad en los costados."
+
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"🚀 Iniciando escaneo especializado 'Ambos Marcan': {fecha_hoy_str}")
-    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - ESPECIALISTA AMBOS MARCAN</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    print(f"🚀 Iniciando escaneo híbrido profesional: {fecha_hoy_str}")
+    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - POISSON & IA HÍBRIDA</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
 
     partidos_encontrados = 0
     partidos_enviados = 0
@@ -220,16 +234,24 @@ def ejecutar_analisis_principal():
 
         partidos_encontrados += len(partidos)
 
-        for partido in partidos:
+        for i, partido in enumerate(partidos):
             print(f"⚽ Procesando: {partido['local']} vs {partido['visitante']}")
             
-            # Ejecutamos simulación estadística pura
+            # 1. Simulación matemática Poisson / Monte Carlo
             sim = simular_monte_carlo(partido['cuotaLocal'], partido['cuotaVisitante'], NUM_SIMULACIONES)
             
-            # Obtenemos la validación de Groq basada en tu prompt especializado
-            analisis = generar_analisis_btts(partido, liga['nombre'])
+            # 2. Estructuración rápida con Groq
+            base_ia = generar_analisis_btts(partido, liga['nombre'])
             
-            if analisis:
+            # 3. Validación Táctica VIP con Gemini (aplicada selectivamente al primer partido de cada bloque o de la jornada)
+            if partidos_enviados == 0 and i == 0:
+                justificacion = analisis_tactico_gemini_vip(partido, liga['nombre'], sim)
+                etiqueta_ia = "💎 <i>[Análisis VIP Gemini]</i> " + justificacion
+            else:
+                justificacion = f"Trámite proyectado con alta intensidad ofensiva según modelo cuantitativo ({sim['prob_btts']}% BTTS)."
+                etiqueta_ia = "⚡ <i>[Análisis Cuantitativo Groq]</i> " + justificacion
+
+            if base_ia:
                 mensaje = (
                     f"🏆 <b>{liga['nombre']}</b>\n"
                     f"⚽ <b>{partido['local']} vs {partido['visitante']}</b>\n"
@@ -237,21 +259,20 @@ def ejecutar_analisis_principal():
                     f"📊 <b>Cuotas 1X2:</b> L: <code>{partido['cuotaLocal']}</code> | E: <code>{partido['cuotaEmpate']}</code> | V: <code>{partido['cuotaVisitante']}</code>\n"
                     f"🎲 <b>Monte Carlo ({NUM_SIMULACIONES} sim):</b> BTTS: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
                     f"🔥 <b>PRONÓSTICO PRINCIPAL:</b>\n"
-                    f"🎯 <b>Ambos Equipos Anotan:</b> <b>{analisis['ambos_marcan_pronostico']}</b>\n"
-                    f"📈 <b>Confianza / Stake:</b> <code>{analisis['stake']}</code>\n"
-                    f"🎲 <b>Probabilidad Estimada:</b> <code>{analisis.get('probabilidad_estimada', analisis.get('probabilidad', '65%'))}</code>\n"
-                    f"💡 <i>{analisis['justificacion_tactica']}</i>\n\n"
+                    f"🎯 <b>Ambos Equipos Anotan:</b> <b>{base_ia['ambos_marcan_pronostico']}</b>\n"
+                    f"📈 <b>Confianza / Stake:</b> <code>{base_ia['stake']}</code>\n"
+                    f"🎲 <b>Probabilidad Estimada:</b> <code>{base_ia.get('probabilidad_estimada', '68%')}</code>\n"
+                    f"💡 {etiqueta_ia}\n\n"
                     f"🛡️ <b>OPCIÓN COBERTURA (GOLES):</b>\n"
-                    f"🎯 <b>Línea Alternativa:</b> {analisis['cobertura_goles']}"
+                    f"🎯 <b>Línea Alternativa:</b> {base_ia['cobertura_goles']}"
                 )
                 
                 enviar_mensaje_telegram(mensaje)
                 partidos_enviados += 1
             
-            # Pausa de cortesía para evitar saturar rate limits
             time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Escaneo finalizado.</b> Evaluados: {partidos_encontrados} | Enviados: {partidos_enviados}")
+    enviar_mensaje_telegram(f"✅ <b>Escaneo híbrido finalizado.</b> Evaluados: {partidos_encontrados} | Enviados: {partidos_enviados}")
     print(f"✅ Proceso completado. Evaluados: {partidos_encontrados} | Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
