@@ -21,9 +21,9 @@ NUM_SIMULACIONES = 10000
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-# Ligas monitoreadas con sport_key verificado
+# Clave verificada para Colombia en The Odds API: soccer_colombia_liga_dimayor
 LIGAS_ODDS = [
-    { "nombre": "Liga BetPlay", "sport_key": "soccer_colombia_primer_a" },
+    { "nombre": "Liga BetPlay", "sport_key": "soccer_colombia_liga_dimayor" },
     { "nombre": "Premier League", "sport_key": "soccer_epl" },
     { "nombre": "LaLiga", "sport_key": "soccer_spain_la_liga" },
     { "nombre": "Serie A", "sport_key": "soccer_italy_serie_a" },
@@ -43,15 +43,15 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-# --- 2. INGESTA ESTRICTA DE CORTO PLAZO (MÁXIMO 48 HORAS) ---
-def obtener_partidos_odds_api():
+# --- 2. INGESTA ADAPTATIVA (48 HORAS CON FALLBACK A 7 DÍAS) ---
+def obtener_partidos_odds_api(dias_limite=2):
     lista_partidos = []
     if not ODDS_API_KEY:
         print("Error: ODDS_API_KEY no está configurada.")
         return []
 
     ahora_utc = datetime.now(timezone.utc)
-    limite_cercano = ahora_utc + timedelta(hours=48)
+    limite_tiempo = ahora_utc + timedelta(days=dias_limite)
 
     for liga in LIGAS_ODDS:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -64,7 +64,7 @@ def obtener_partidos_odds_api():
         try:
             response = requests.get(url, params=params, timeout=10)
             if response.status_code != 200:
-                print(f"Error {response.status_code} en The Odds API ({liga['nombre']})")
+                print(f"Error {response.status_code} en The Odds API para {liga['nombre']} ({liga['sport_key']})")
                 continue
             
             eventos = response.json()
@@ -75,7 +75,7 @@ def obtener_partidos_odds_api():
                 
                 try:
                     fecha_dt = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
-                    if not (ahora_utc <= fecha_dt <= limite_cercano):
+                    if not (ahora_utc <= fecha_dt <= limite_tiempo):
                         continue
                     commence_time = fecha_dt.astimezone(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %H:%M")
                 except Exception:
@@ -221,19 +221,25 @@ def analisis_tactico_gemini_vip(partido, sim_data):
 # --- 5. ORQUESTADOR PRINCIPAL ---
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de corto plazo (Próximas 48h): {fecha_hoy_str}")
+    print(f"Iniciando escaneo: {fecha_hoy_str}")
     
-    partidos = obtener_partidos_odds_api()
+    # Intento 1: Buscar a 2 días (48h)
+    partidos = obtener_partidos_odds_api(dias_limite=2)
+    
+    # Intento 2 (Fallback): Si no hay partidos a 48h, ampliar automáticamente a 7 días
+    if not partidos:
+        print("No se encontraron partidos a 48h. Ampliando ventana a 7 días...")
+        partidos = obtener_partidos_odds_api(dias_limite=7)
 
     if not partidos:
         aviso_vacio = (
             f"<b>REPORTE DE JORNADA INMEDIATA</b>\n\n"
-            f"<i>No hay partidos agendados en las próximas 48 horas con cuotas completas en las ligas monitoreadas.</i>"
+            f"<i>No hay partidos agendados para los próximos 7 días con cuotas completas en las ligas monitoreadas.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
         return
 
-    enviar_mensaje_telegram(f"<b>ANALIZADOR VIP (CORTO PLAZO 48H | CERTEZA 70%+)</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    enviar_mensaje_telegram(f"<b>ANALIZADOR VIP (CERTEZA 70%+)</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
     partidos_enviados = 0
 
     for i, partido in enumerate(partidos):
@@ -276,7 +282,7 @@ def ejecutar_analisis_principal():
         partidos_enviados += 1
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"<b>Escaneo completado.</b> Pronósticos inmediatos de alta certeza (70%+): {partidos_enviados}")
+    enviar_mensaje_telegram(f"<b>Escaneo completado.</b> Pronósticos procesados con éxito: {partidos_enviados}")
     print(f"Proceso completado exitosamente. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
