@@ -7,18 +7,16 @@ import requests
 from datetime import datetime, timezone, timedelta
 from google import genai
 
-# --- 1. CONFIGURACIÓN SEGUIRA DE CREDENCIALES Y ENTORNO ---
-# Carga estricta desde variables de entorno (Sin claves expuestas en código)
+# --- 1. CONFIGURACIÓN SEGURA DE CREDENCIALES Y ENTORNO ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")  # Variable correcta para The Odds API
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
-# Inicialización segura de cliente Gemini
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-1.5-flash'
 
@@ -83,7 +81,6 @@ def obtener_partidos_odds_api():
                                 elif name == away_team: cuota_visitante = price
                                 else: cuota_empate = price
 
-                # Omitir partidos que no tengan cuotas reales publicadas
                 if not cuota_local or not cuota_visitante or not cuota_empate:
                     print(f"ℹ️ Omitiendo {home_team} vs {away_team}: Cuotas incompletas.")
                     continue
@@ -106,20 +103,17 @@ def obtener_partidos_odds_api():
 # --- 3. MOTOR ESTOCÁSTICO POISSON / MONTE CARLO ---
 def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
     try:
-        # Probabilidades implícitas ajustadas del mercado
         prob_loc_impl = 1.0 / cuota_loc
         prob_vis_impl = 1.0 / cuota_vis
     except ZeroDivisionError:
         return None
 
-    # Parámetros lambda de intensidad anotadora esperada
     lambda_loc = prob_loc_impl * 2.7
     lambda_vis = prob_vis_impl * 2.3
 
     p_local, p_empate, p_visita, p_over25, p_btts = 0, 0, 0, 0, 0
 
     for _ in range(num_sim):
-        # Generación aleatoria mediante algoritmo Knuth para Poisson
         l_l, p = lambda_loc, math.exp(-lambda_loc)
         g_l, p_acc, u = 0, p, random.random()
         while u > p_acc and g_l < 10:
@@ -157,7 +151,6 @@ def generar_analisis_btts(partido, sim_data):
 
     url_api = "https://api.groq.com/openai/v1/chat/completions"
     
-    # Prompt dinámico libre de sesgos y sin respuestas predeterminadas
     prompt_text = f"""Eres un analista cuantitativo de apuestas deportivas. Evalúa de forma objetiva si el mercado "Ambos Anotan" (BTTS) o "Over 2.5" tiene valor real para el siguiente encuentro.
 
 DATOS DEL PARTIDO:
@@ -248,7 +241,6 @@ def ejecutar_analisis_principal():
         else:
             etiqueta_ia = f"⚡ <i>[Métrica Cuantitativa]</i> BTTS proyectado en {sim['prob_btts']}% según simulación."
 
-        # Construcción del mensaje solo si existen datos válidos de IA
         if base_ia:
             mensaje = (
                 f"🏆 <b>{partido['liga']}</b>\n"
