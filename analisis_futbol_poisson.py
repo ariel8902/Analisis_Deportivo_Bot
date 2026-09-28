@@ -23,11 +23,11 @@ MODELO_GEMINI = 'gemini-3.8-flash'
 
 # Ligas monitoreadas
 LIGAS_ODDS = [
-    { "nombre": "🇨🇴 Liga BetPlay", "sport_key": "soccer_colombia_liga_aguila" },
-    { "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "sport_key": "soccer_epl" },
-    { "nombre": "🇪🇸 LaLiga", "sport_key": "soccer_spain_la_liga" },
-    { "nombre": "🇮🇹 Serie A", "sport_key": "soccer_italy_serie_a" },
-    { "nombre": "🇩🇪 Bundesliga", "sport_key": "soccer_germany_bundesliga" }
+    { "nombre": "Liga BetPlay", "sport_key": "soccer_colombia_liga_aguila" },
+    { "nombre": "Premier League", "sport_key": "soccer_epl" },
+    { "nombre": "LaLiga", "sport_key": "soccer_spain_la_liga" },
+    { "nombre": "Serie A", "sport_key": "soccer_italy_serie_a" },
+    { "nombre": "Bundesliga", "sport_key": "soccer_germany_bundesliga" }
 ]
 
 def enviar_mensaje_telegram(texto):
@@ -50,7 +50,6 @@ def obtener_partidos_odds_api():
         print("Error: ODDS_API_KEY no está configurada.")
         return []
 
-    # REGLA DE ORO: Solo evaluar partidos en las próximas 48 horas (evita análisis prematuros)
     ahora_utc = datetime.now(timezone.utc)
     limite_cercano = ahora_utc + timedelta(hours=48)
 
@@ -76,7 +75,6 @@ def obtener_partidos_odds_api():
                 
                 try:
                     fecha_dt = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
-                    # Descartar partidos lejanos (se procesan solo cuando falten <= 48 horas)
                     if not (ahora_utc <= fecha_dt <= limite_cercano):
                         continue
                     commence_time = fecha_dt.astimezone(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %H:%M")
@@ -229,13 +227,13 @@ def ejecutar_analisis_principal():
 
     if not partidos:
         aviso_vacio = (
-            f"🛡️ <b>REPORTE DE JORNADA INMEDIATA</b>\n\n"
+            f"<b>REPORTE DE JORNADA INMEDIATA</b>\n\n"
             f"<i>No hay partidos agendados en las próximas 48 horas con cuotas completas en las ligas monitoreadas.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
         return
 
-    enviar_mensaje_telegram(f"🔥 <b>ANALIZADOR VIP (CORTO PLAZO 48H | CERTEZA 70%+)</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    enviar_mensaje_telegram(f"<b>ANALIZADOR VIP (CORTO PLAZO 48H | CERTEZA 70%+)</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
     partidos_enviados = 0
 
     for i, partido in enumerate(partidos):
@@ -243,7 +241,6 @@ def ejecutar_analisis_principal():
         if not sim:
             continue
 
-        # --- FILTRO DE EFECTIVIDAD Y CERTEZA (70%+) ---
         if sim['prob_btts'] < 70.0 and sim['prob_over25'] < 70.0:
             continue
 
@@ -251,9 +248,9 @@ def ejecutar_analisis_principal():
         
         if i == 0 and client_gemini:
             justificacion = analisis_tactico_gemini_vip(partido, sim)
-            etiqueta_ia = "💎 <i>[Análisis VIP Gemini]</i> " + justificacion
+            etiqueta_ia = "<i>[Análisis VIP Gemini]</i> " + justificacion
         else:
-            etiqueta_ia = f"⚡ <i>[Métrica Cuantitativa]</i> Alta certeza matemática respaldada por la simulación."
+            etiqueta_ia = f"<i>[Métrica Cuantitativa]</i> Alta certeza matemática respaldada por la simulación."
 
         pronostico_btts = base_ia.get('ambos_marcan_pronostico', 'SÍ') if base_ia else 'SÍ'
         stake_val = base_ia.get('stake', '4/5') if base_ia else '4/5'
@@ -279,7 +276,7 @@ def ejecutar_analisis_principal():
         partidos_enviados += 1
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Pronósticos inmediatos de alta certeza (70%+): {partidos_enviados}")
+    enviar_mensaje_telegram(f"<b>Escaneo completado.</b> Pronósticos inmediatos de alta certeza (70%+): {partidos_enviados}")
     print(f"Proceso completado exitosamente. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
