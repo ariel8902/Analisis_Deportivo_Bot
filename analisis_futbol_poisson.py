@@ -21,30 +21,30 @@ client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-1.5-flash'
 
 LIGAS_EUROPEAS_ODDS = [
-    { "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "sport_key": "soccer_epl" },
-    { "nombre": "🇪🇸 LaLiga", "sport_key": "soccer_spain_la_liga" },
-    { "nombre": "🇮🇹 Serie A", "sport_key": "soccer_italy_serie_a" },
-    { "nombre": "🇩🇪 Bundesliga", "sport_key": "soccer_germany_bundesliga" }
+    { "nombre": "Premier League", "sport_key": "soccer_epl" },
+    { "nombre": "LaLiga", "sport_key": "soccer_spain_la_liga" },
+    { "nombre": "Serie A", "sport_key": "soccer_italy_serie_a" },
+    { "nombre": "Bundesliga", "sport_key": "soccer_germany_bundesliga" }
 ]
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ Error: Credenciales de Telegram no configuradas en variables de entorno.")
+        print("Error: Credenciales de Telegram no configuradas en variables de entorno.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = { "chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML" }
     try:
         response = requests.post(url, json=payload, timeout=8)
         if response.status_code != 200:
-            print(f"⚠️ Telegram devolvió código {response.status_code}: {response.text}")
+            print(f"Telegram devolvió código {response.status_code}: {response.text}")
     except Exception as e:
-        print("❌ Error enviando mensaje a Telegram:", e)
+        print("Error enviando mensaje a Telegram:", e)
 
 # --- 2. INGESTA VERIFICADA DESDE THE ODDS API ---
 def obtener_partidos_odds_api():
     lista_partidos = []
     if not ODDS_API_KEY:
-        print("❌ Error: ODDS_API_KEY no está configurada en las variables de entorno.")
+        print("Error: ODDS_API_KEY no está configurada en las variables de entorno.")
         return []
 
     for liga in LIGAS_EUROPEAS_ODDS:
@@ -58,7 +58,7 @@ def obtener_partidos_odds_api():
         try:
             response = requests.get(url, params=params, timeout=10)
             if response.status_code != 200:
-                print(f"⚠️ Error {response.status_code} en The Odds API ({liga['nombre']})")
+                print(f"Error {response.status_code} en The Odds API ({liga['nombre']})")
                 continue
             
             eventos = response.json()
@@ -82,7 +82,7 @@ def obtener_partidos_odds_api():
                                 else: cuota_empate = price
 
                 if not cuota_local or not cuota_visitante or not cuota_empate:
-                    print(f"ℹ️ Omitiendo {home_team} vs {away_team}: Cuotas incompletas.")
+                    print(f"Omitiendo {home_team} vs {away_team}: Cuotas incompletas.")
                     continue
 
                 lista_partidos.append({
@@ -96,7 +96,7 @@ def obtener_partidos_odds_api():
                 })
             time.sleep(0.5)
         except Exception as e:
-            print(f"❌ Error conectando con The Odds API para {liga['nombre']}:", e)
+            print(f"Error conectando con The Odds API para {liga['nombre']}:", e)
 
     return lista_partidos
 
@@ -146,7 +146,7 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
 # --- 4. VALIDACIÓN CONTEXTUAL CON GROQ Y GEMINI ---
 def generar_analisis_btts(partido, sim_data):
     if not GROQ_API_KEY:
-        print("⚠️ GROQ_API_KEY no configurada. Omitiendo evaluación de Groq.")
+        print("GROQ_API_KEY no configurada. Omitiendo evaluación de Groq.")
         return None
 
     url_api = "https://api.groq.com/openai/v1/chat/completions"
@@ -180,9 +180,9 @@ ESTRUCTURA REQUERIDA (Responde ÚNICAMENTE en JSON sintácticamente válido):
             content = response.json()["choices"][0]["message"]["content"]
             return json.loads(content)
         else:
-            print(f"⚠️ Groq respondió con error HTTP {response.status_code}")
+            print(f"Groq respondió con error HTTP {response.status_code}")
     except Exception as e:
-        print("❌ Error en la API de Groq:", e)
+        print("Error en la API de Groq:", e)
     
     return None
 
@@ -202,7 +202,7 @@ def analisis_tactico_gemini_vip(partido, sim_data):
             if res and res.text:
                 return res.text.strip()
         except Exception as e:
-            print(f"⚠️ Reintento Gemini VIP ({intento+1}):", e)
+            print(f"Reintento Gemini VIP ({intento+1}):", e)
             time.sleep(2)
             
     return "Proyección fundamentada en los volúmenes de llegada y concedidos por la simulación."
@@ -210,24 +210,24 @@ def analisis_tactico_gemini_vip(partido, sim_data):
 # --- 5. ORQUESTADOR PRINCIPAL ---
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"🚀 Iniciando escaneo de Ligas Europeas: {fecha_hoy_str}")
+    print(f"Iniciando escaneo de Ligas Europeas: {fecha_hoy_str}")
     
     partidos = obtener_partidos_odds_api()
 
     if not partidos:
         aviso_vacio = (
-            f"🛡️ <b>REPORTE DE JORNADA VIGENTE</b>\n\n"
-            f"📊 <i>No se encontraron partidos disponibles con cuotas completas en The Odds API.</i>"
+            f"<b>REPORTE DE JORNADA VIGENTE</b>\n\n"
+            f"<i>No se encontraron partidos disponibles con cuotas completas en The Odds API.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
-        print("⚠️ Proceso finalizado: No hay partidos válidos para procesar.")
+        print("Proceso finalizado: No hay partidos válidos para procesar.")
         return
 
-    enviar_mensaje_telegram(f"🎯 <b>ANALIZADOR CUANTITATIVO EUROPEO</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    enviar_mensaje_telegram(f"<b>ANALIZADOR CUANTITATIVO EUROPEO</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
     partidos_enviados = 0
 
     for i, partido in enumerate(partidos):
-        print(f"⚽ Procesando: {partido['local']} vs {partido['visitante']} ({partido['liga']})")
+        print(f"Procesando: {partido['local']} vs {partido['visitante']} ({partido['liga']})")
         
         sim = simular_monte_carlo(partido['cuotaLocal'], partido['cuotaVisitante'], NUM_SIMULACIONES)
         if not sim:
@@ -237,9 +237,9 @@ def ejecutar_analisis_principal():
         
         if i == 0:
             justificacion = analisis_tactico_gemini_vip(partido, sim)
-            etiqueta_ia = "💎 <i>[Análisis VIP Gemini]</i> " + justificacion
+            etiqueta_ia = "<i>[Análisis VIP Gemini]</i> " + justificacion
         else:
-            etiqueta_ia = f"⚡ <i>[Métrica Cuantitativa]</i> BTTS proyectado en {sim['prob_btts']}% según simulación."
+            etiqueta_ia = f"<i>[Métrica Cuantitativa]</i> BTTS proyectado en {sim['prob_btts']}% según simulación."
 
         if base_ia:
             mensaje = (
@@ -261,8 +261,8 @@ def ejecutar_analisis_principal():
             partidos_enviados += 1
             time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Partidos analizados de forma transparente: {partidos_enviados}")
-    print(f"✅ Proceso completado exitosamente. Enviados: {partidos_enviados}")
+    enviar_mensaje_telegram(f"<b>Escaneo completado.</b> Partidos analizados de forma transparente: {partidos_enviados}")
+    print(f"Proceso completado exitosamente. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
     ejecutar_analisis_principal()
