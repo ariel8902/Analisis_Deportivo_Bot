@@ -21,9 +21,9 @@ NUM_SIMULACIONES = 10000
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-# Ligas monitoreadas
+# Ligas monitoreadas con sport_key verificado
 LIGAS_ODDS = [
-    { "nombre": "Liga BetPlay", "sport_key": "soccer_colombia_liga_aguila" },
+    { "nombre": "Liga BetPlay", "sport_key": "soccer_colombia_primer_a" },
     { "nombre": "Premier League", "sport_key": "soccer_epl" },
     { "nombre": "LaLiga", "sport_key": "soccer_spain_la_liga" },
     { "nombre": "Serie A", "sport_key": "soccer_italy_serie_a" },
