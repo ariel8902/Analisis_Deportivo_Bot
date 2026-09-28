@@ -17,15 +17,17 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
-# Inicialización segura de Gemini
+# Inicialización de Gemini
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-LIGAS_EUROPEAS_ODDS = [
-    { "nombre": "Premier League", "sport_key": "soccer_epl" },
-    { "nombre": "LaLiga", "sport_key": "soccer_spain_la_liga" },
-    { "nombre": "Serie A", "sport_key": "soccer_italy_serie_a" },
-    { "nombre": "Bundesliga", "sport_key": "soccer_germany_bundesliga" }
+# Ligas monitoreadas
+LIGAS_ODDS = [
+    { "nombre": "🇨🇴 Liga BetPlay", "sport_key": "soccer_colombia_liga_aguila" },
+    { "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "sport_key": "soccer_epl" },
+    { "nombre": "🇪🇸 LaLiga", "sport_key": "soccer_spain_la_liga" },
+    { "nombre": "🇮🇹 Serie A", "sport_key": "soccer_italy_serie_a" },
+    { "nombre": "🇩🇪 Bundesliga", "sport_key": "soccer_germany_bundesliga" }
 ]
 
 def enviar_mensaje_telegram(texto):
@@ -41,22 +43,22 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-# --- 2. INGESTA VERIFICADA CON FILTRO DE FECHAS (9 AL 11 DE OCTUBRE 2026) ---
+# --- 2. INGESTA ESTRICTA DE CORTO PLAZO (MÁXIMO 48 HORAS) ---
 def obtener_partidos_odds_api():
     lista_partidos = []
     if not ODDS_API_KEY:
         print("Error: ODDS_API_KEY no está configurada.")
         return []
 
-    # Fechas límite para la próxima jornada (9 al 11 de octubre de 2026)
-    fecha_inicio = datetime(2026, 10, 9, 0, 0, 0, tzinfo=timezone.utc)
-    fecha_fin = datetime(2026, 10, 12, 0, 0, 0, tzinfo=timezone.utc)
+    # REGLA DE ORO: Solo evaluar partidos en las próximas 48 horas (evita análisis prematuros)
+    ahora_utc = datetime.now(timezone.utc)
+    limite_cercano = ahora_utc + timedelta(hours=48)
 
-    for liga in LIGAS_EUROPEAS_ODDS:
+    for liga in LIGAS_ODDS:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
         params = {
             "apiKey": ODDS_API_KEY,
-            "regions": "eu",
+            "regions": "eu,us",
             "markets": "h2h,totals",
             "oddsFormat": "decimal"
         }
@@ -74,8 +76,8 @@ def obtener_partidos_odds_api():
                 
                 try:
                     fecha_dt = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
-                    # Filtrar únicamente partidos entre el 9 y el 11 de Octubre
-                    if not (fecha_inicio <= fecha_dt <= fecha_fin):
+                    # Descartar partidos lejanos (se procesan solo cuando falten <= 48 horas)
+                    if not (ahora_utc <= fecha_dt <= limite_cercano):
                         continue
                     commence_time = fecha_dt.astimezone(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %H:%M")
                 except Exception:
@@ -159,7 +161,7 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
         "prob_btts": round((p_btts / num_sim) * 100, 1)
     }
 
-# --- 4. EVALUACIÓN DE IA CON MODELO ESTÁNDAR LAMA 3.3 Y GEMINI ---
+# --- 4. INTEGRACIÓN DE MODELOS DE IA ---
 def generar_analisis_btts(partido, sim_data):
     if not GROQ_API_KEY:
         return None
@@ -218,22 +220,22 @@ def analisis_tactico_gemini_vip(partido, sim_data):
             
     return "Proyección fundamentada en dominancia de áreas y alto volumen ofensivo esperable."
 
-# --- 5. ORQUESTADOR PRINCIPAL CON FILTRO DE EFECTIVIDAD DEL 70% ---
+# --- 5. ORQUESTADOR PRINCIPAL ---
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Alta Certeza (Jornada 9-11 Oct): {fecha_hoy_str}")
+    print(f"Iniciando escaneo de corto plazo (Próximas 48h): {fecha_hoy_str}")
     
     partidos = obtener_partidos_odds_api()
 
     if not partidos:
         aviso_vacio = (
-            f"<b>REPORTE DE JORNADA PRÓXIMA (9 - 11 OCT)</b>\n\n"
-            f"<i>No se encontraron partidos programados en esas fechas con cuotas completas.</i>"
+            f"🛡️ <b>REPORTE DE JORNADA INMEDIATA</b>\n\n"
+            f"<i>No hay partidos agendados en las próximas 48 horas con cuotas completas en las ligas monitoreadas.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
         return
 
-    enviar_mensaje_telegram(f"🔥 <b>ANALIZADOR VIP (FILTRO DE CERTEZA 70%+)</b>\n📅 Jornada objetivo: <b>09 - 11 de Octubre</b>")
+    enviar_mensaje_telegram(f"🔥 <b>ANALIZADOR VIP (CORTO PLAZO 48H | CERTEZA 70%+)</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
     partidos_enviados = 0
 
     for i, partido in enumerate(partidos):
@@ -241,8 +243,7 @@ def ejecutar_analisis_principal():
         if not sim:
             continue
 
-        # --- FILTRO RIGUROSO DE CERTEZA / EFECTIVIDAD DEL 70% ---
-        # Solo se envía si BTTS o Over 2.5 superan o igualan el 70% de probabilidad
+        # --- FILTRO DE EFECTIVIDAD Y CERTEZA (70%+) ---
         if sim['prob_btts'] < 70.0 and sim['prob_over25'] < 70.0:
             continue
 
@@ -278,7 +279,7 @@ def ejecutar_analisis_principal():
         partidos_enviados += 1
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Pronósticos filtrados de alta certeza (70%+): {partidos_enviados}")
+    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Pronósticos inmediatos de alta certeza (70%+): {partidos_enviados}")
     print(f"Proceso completado exitosamente. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
