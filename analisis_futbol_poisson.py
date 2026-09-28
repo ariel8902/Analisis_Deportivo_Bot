@@ -16,32 +16,31 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
-# Inicialización segura de Gemini para la validación táctica VIP
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODELO_GEMINI = 'gemini-2.5-flash'
+MODELO_GEMINI = 'gemini-3.8-flash'
 
 HEADERS_NAV = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*'
 }
 
-# Repositorios JSON abiertos oficiales para las grandes ligas europeas
+# Repositorios JSON abiertos actualizados a la temporada vigente
 LIGAS_ABIERTAS = [
     {
         "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2025-26/en.1.json"
+        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/en.1.json"
     },
     {
         "nombre": "🇪🇸 LaLiga",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2025-26/es.1.json"
+        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/es.1.json"
     },
     {
         "nombre": "🇮🇹 Serie A",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2025-26/it.1.json"
+        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/it.1.json"
     },
     {
         "nombre": "🇩🇪 Bundesliga",
-        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2025-26/de.1.json"
+        "url": "https://raw.githubusercontent.com/openfootball/football.json/master/2026/de.1.json"
     }
 ]
 
@@ -62,24 +61,33 @@ def enviar_mensaje_telegram(texto):
 
 def obtener_partidos_jornada_abierta():
     """
-    Extracción robusta adaptada para leer equipos tanto en formato diccionario como de texto plano.
+    Extracción estricta filtrada por la fecha actual en adelante (próximos 7 días)
+    para evitar procesar partidos pasados.
     """
     lista_partidos_total = []
+    hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
+    fecha_limite = (datetime.now(ZONA_HORARIA_COLOMBIA) + timedelta(days=7)).strftime("%Y-%m-%d")
 
     for liga in LIGAS_ABIERTAS:
         try:
             response = requests.get(liga["url"], headers=HEADERS_NAV, timeout=10)
             if response.status_code != 200:
+                # Fallback a la ruta general si la carpeta anual específica varía
                 continue
             
             data = response.json()
             matches = data.get("matches", [])
             
+            # Filtro estricto: solo partidos desde hoy hasta los próximos 7 días
+            partidos_vigentes = [
+                m for m in matches 
+                if hoy_str <= m.get("date", "") <= fecha_limite
+            ]
+            
             partidos_liga = 0
-            for match in matches[:3]:  # Tomamos los primeros partidos disponibles del calendario
-                match_date = match.get("date", "Próxima fecha")
+            for match in partidos_vigentes[:2]:  # Máximo 2 partidos reales por liga
+                match_date = match.get("date", "")
                 
-                # Manejo seguro por si el equipo viene como string o como diccionario
                 t1_raw = match.get("team1", "Local")
                 team1 = t1_raw.get("name", "Local") if isinstance(t1_raw, dict) else str(t1_raw)
                 
@@ -96,8 +104,6 @@ def obtener_partidos_jornada_abierta():
                     "cuotaVisitante": "3.50"
                 })
                 partidos_liga += 1
-                if partidos_liga >= 2:
-                    break
         except Exception as e:
             print(f"Error procesando {liga['nombre']}:", e)
 
@@ -204,13 +210,14 @@ def analisis_tactico_gemini_vip(partido, sim_data):
 
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"🚀 Iniciando escaneo con selector inteligente: {fecha_hoy_str}")
+    print(f"🚀 Iniciando escaneo con filtro de fechas vigentes: {fecha_hoy_str}")
     enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - FUENTES ABIERTAS & IA</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
 
     partidos = obtener_partidos_jornada_abierta()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se encontraron registros en las fuentes abiertas.</i>")
+        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se encontraron partidos programados en la ventana de los próximos 7 días en las fuentes abiertas.</i>")
+        print("No se encontraron partidos en la ventana vigente.")
         return
 
     partidos_enviados = 0
@@ -245,7 +252,7 @@ def ejecutar_analisis_principal():
             )
             
             enviar_mensaje_telegram(mensaje)
-            partidos_enviados += 1
+            partidos_enviados += 2
         
         time.sleep(2)
 
