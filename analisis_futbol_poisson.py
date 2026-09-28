@@ -18,7 +18,7 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODELO_GEMINI = 'gemini-1.5-flash'
+MODELO_GEMINI = 'gemini-2.5-flash'
 
 LIGAS_EUROPEAS_ODDS = [
     { "nombre": "Premier League", "sport_key": "soccer_epl" },
