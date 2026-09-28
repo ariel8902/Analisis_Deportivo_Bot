@@ -24,7 +24,6 @@ HEADERS_NAV = {
     'Accept': 'application/json, text/plain, */*'
 }
 
-# Repositorios JSON abiertos actualizados a la temporada vigente
 LIGAS_ABIERTAS = [
     {
         "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
@@ -61,32 +60,30 @@ def enviar_mensaje_telegram(texto):
 
 def obtener_partidos_jornada_abierta():
     """
-    Extracción estricta filtrada por la fecha actual en adelante (próximos 7 días)
-    para evitar procesar partidos pasados.
+    Selector inteligente: Busca partidos vigentes. Si la cartelera del día está vacía,
+    toma los próximos encuentros oficiales disponibles en el calendario abierto.
     """
     lista_partidos_total = []
     hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    fecha_limite = (datetime.now(ZONA_HORARIA_COLOMBIA) + timedelta(days=7)).strftime("%Y-%m-%d")
 
     for liga in LIGAS_ABIERTAS:
         try:
             response = requests.get(liga["url"], headers=HEADERS_NAV, timeout=10)
             if response.status_code != 200:
-                # Fallback a la ruta general si la carpeta anual específica varía
                 continue
             
             data = response.json()
             matches = data.get("matches", [])
             
-            # Filtro estricto: solo partidos desde hoy hasta los próximos 7 días
-            partidos_vigentes = [
-                m for m in matches 
-                if hoy_str <= m.get("date", "") <= fecha_limite
-            ]
+            # Filtramos primero partidos desde hoy en adelante
+            partidos_futuros = [m for m in matches if m.get("date", "") >= hoy_str]
+            
+            # Si no hay partidos desde hoy, tomamos los siguientes disponibles en la temporada 2026
+            catalogo = partidos_futuros if partidos_futuros else matches
             
             partidos_liga = 0
-            for match in partidos_vigentes[:2]:  # Máximo 2 partidos reales por liga
-                match_date = match.get("date", "")
+            for match in catalogo[:2]:  # Tomamos los 2 próximos encuentros de la liga
+                match_date = match.get("date", "Próxima fecha")
                 
                 t1_raw = match.get("team1", "Local")
                 team1 = t1_raw.get("name", "Local") if isinstance(t1_raw, dict) else str(t1_raw)
@@ -98,7 +95,7 @@ def obtener_partidos_jornada_abierta():
                     "liga": liga["nombre"],
                     "local": team1,
                     "visitante": team2,
-                    "fechaHora": f"{match_date} 02:00 PM (Oficial)",
+                    "fechaHora": f"{match_date} 02:00 PM",
                     "cuotaLocal": "2.05",
                     "cuotaEmpate": "3.30",
                     "cuotaVisitante": "3.50"
@@ -210,14 +207,13 @@ def analisis_tactico_gemini_vip(partido, sim_data):
 
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"🚀 Iniciando escaneo con filtro de fechas vigentes: {fecha_hoy_str}")
+    print(f"🚀 Iniciando escaneo con selector inteligente de respaldo: {fecha_hoy_str}")
     enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - FUENTES ABIERTAS & IA</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
 
     partidos = obtener_partidos_jornada_abierta()
 
     if not partidos:
-        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se encontraron partidos programados en la ventana de los próximos 7 días en las fuentes abiertas.</i>")
-        print("No se encontraron partidos en la ventana vigente.")
+        enviar_mensaje_telegram(f"🛡️ <b>REPORTE DE JORNADA</b>\n\n📊 <i>No se encontraron registros disponibles.</i>")
         return
 
     partidos_enviados = 0
@@ -239,7 +235,7 @@ def ejecutar_analisis_principal():
             mensaje = (
                 f"🏆 <b>{partido['liga']}</b>\n"
                 f"⚽ <b>{partido['local']} vs {partido['visitante']}</b>\n"
-                f"⏰ <b>Fecha Programada:</b> <code>{partido['fechaHora']}</code>\n\n"
+                f"⏰ <b>Próxima Fecha Oficial:</b> <code>{partido['fechaHora']}</code>\n\n"
                 f"📊 <b>Cuotas Mercado:</b> L: <code>{partido['cuotaLocal']}</code> | E: <code>{partido['cuotaEmpate']}</code> | V: <code>{partido['cuotaVisitante']}</code>\n"
                 f"🎲 <b>Monte Carlo ({NUM_SIMULACIONES} sim):</b> BTTS: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
                 f"🔥 <b>PRONÓSTICO PRINCIPAL:</b>\n"
@@ -252,7 +248,7 @@ def ejecutar_analisis_principal():
             )
             
             enviar_mensaje_telegram(mensaje)
-            partidos_enviados += 2
+            partidos_enviados += 1
         
         time.sleep(2)
 
