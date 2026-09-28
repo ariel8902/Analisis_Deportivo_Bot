@@ -17,6 +17,7 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
+# Inicialización segura de cliente Gemini con el nombre de modelo compatible
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-2.5-flash'
 
@@ -241,25 +242,30 @@ def ejecutar_analisis_principal():
         else:
             etiqueta_ia = f"<i>[Métrica Cuantitativa]</i> BTTS proyectado en {sim['prob_btts']}% según simulación."
 
-        if base_ia:
-            mensaje = (
-                f"🏆 <b>{partido['liga']}</b>\n"
-                f"⚽ <b>{partido['local']} vs {partido['visitante']}</b>\n"
-                f"⏰ <b>Fecha:</b> <code>{partido['fechaHora']}</code>\n\n"
-                f"📊 <b>Cuotas Real Mercado:</b> L: <code>{partido['cuotaLocal']}</code> | E: <code>{partido['cuotaEmpate']}</code> | V: <code>{partido['cuotaVisitante']}</code>\n"
-                f"🎲 <b>Monte Carlo ({NUM_SIMULACIONES} sim):</b> BTTS: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
-                f"🔥 <b>EVALUACIÓN DE MERCADO:</b>\n"
-                f"🎯 <b>Ambos Equipos Anotan:</b> <b>{base_ia.get('ambos_marcan_pronostico', 'N/A')}</b>\n"
-                f"📈 <b>Stake Recomendado:</b> <code>{base_ia.get('stake', 'N/A')}</code>\n"
-                f"🎲 <b>Probabilidad Estimada:</b> <code>{base_ia.get('probabilidad_estimada', 'N/A')}</code>\n"
-                f"💡 {etiqueta_ia}\n\n"
-                f"🛡️ <b>MERCADO ALTERNATIVO:</b>\n"
-                f"🎯 <b>Línea Sostenible:</b> {base_ia.get('cobertura_goles', 'Over 2.5 Goles')}"
-            )
-            
-            enviar_mensaje_telegram(mensaje)
-            partidos_enviados += 1
-            time.sleep(2)
+        # Extracción segura de valores sin bloquear si Groq falla
+        pronostico_btts = base_ia.get('ambos_marcan_pronostico', 'SÍ' if sim['prob_btts'] > 55 else 'NO') if base_ia else ('SÍ' if sim['prob_btts'] > 55 else 'NO')
+        stake_val = base_ia.get('stake', '3/5') if base_ia else '3/5'
+        prob_est = base_ia.get('probabilidad_estimada', f"{sim['prob_btts']}%") if base_ia else f"{sim['prob_btts']}%"
+        cobertura = base_ia.get('cobertura_goles', 'Over 2.5 Goles') if base_ia else 'Over 2.5 Goles'
+
+        mensaje = (
+            f"🏆 <b>{partido['liga']}</b>\n"
+            f"⚽ <b>{partido['local']} vs {partido['visitante']}</b>\n"
+            f"⏰ <b>Fecha:</b> <code>{partido['fechaHora']}</code>\n\n"
+            f"📊 <b>Cuotas Real Mercado:</b> L: <code>{partido['cuotaLocal']}</code> | E: <code>{partido['cuotaEmpate']}</code> | V: <code>{partido['cuotaVisitante']}</code>\n"
+            f"🎲 <b>Monte Carlo ({NUM_SIMULACIONES} sim):</b> BTTS: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
+            f"🔥 <b>EVALUACIÓN DE MERCADO:</b>\n"
+            f"🎯 <b>Ambos Equipos Anotan:</b> <b>{pronostico_btts}</b>\n"
+            f"📈 <b>Stake Recomendado:</b> <code>{stake_val}</code>\n"
+            f"🎲 <b>Probabilidad Estimada:</b> <code>{prob_est}</code>\n"
+            f"💡 {etiqueta_ia}\n\n"
+            f"🛡️ <b>MERCADO ALTERNATIVO:</b>\n"
+            f"🎯 <b>Línea Sostenible:</b> {cobertura}"
+        )
+        
+        enviar_mensaje_telegram(mensaje)
+        partidos_enviados += 1
+        time.sleep(2)
 
     enviar_mensaje_telegram(f"<b>Escaneo completado.</b> Partidos analizados de forma transparente: {partidos_enviados}")
     print(f"Proceso completado exitosamente. Enviados: {partidos_enviados}")
