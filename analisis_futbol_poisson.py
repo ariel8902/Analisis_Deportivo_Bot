@@ -17,9 +17,9 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
 
-# Inicialización segura de cliente Gemini con el nombre de modelo compatible
+# Inicialización segura de Gemini
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODELO_GEMINI = 'gemini-2.5-flash'
+MODELO_GEMINI = 'gemini-3.8-flash'
 
 LIGAS_EUROPEAS_ODDS = [
     { "nombre": "Premier League", "sport_key": "soccer_epl" },
@@ -30,23 +30,27 @@ LIGAS_EUROPEAS_ODDS = [
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Error: Credenciales de Telegram no configuradas en variables de entorno.")
+        print("Error: Credenciales de Telegram no configuradas.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = { "chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML" }
     try:
         response = requests.post(url, json=payload, timeout=8)
         if response.status_code != 200:
-            print(f"Telegram devolvió código {response.status_code}: {response.text}")
+            print(f"Telegram respondió con código {response.status_code}: {response.text}")
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-# --- 2. INGESTA VERIFICADA DESDE THE ODDS API ---
+# --- 2. INGESTA VERIFICADA CON FILTRO DE FECHAS (9 AL 11 DE OCTUBRE 2026) ---
 def obtener_partidos_odds_api():
     lista_partidos = []
     if not ODDS_API_KEY:
-        print("Error: ODDS_API_KEY no está configurada en las variables de entorno.")
+        print("Error: ODDS_API_KEY no está configurada.")
         return []
+
+    # Fechas límite para la próxima jornada (9 al 11 de octubre de 2026)
+    fecha_inicio = datetime(2026, 10, 9, 0, 0, 0, tzinfo=timezone.utc)
+    fecha_fin = datetime(2026, 10, 12, 0, 0, 0, tzinfo=timezone.utc)
 
     for liga in LIGAS_EUROPEAS_ODDS:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -64,9 +68,21 @@ def obtener_partidos_odds_api():
             
             eventos = response.json()
             for evento in eventos:
+                commence_raw = evento.get("commence_time", "")
+                if not commence_raw:
+                    continue
+                
+                try:
+                    fecha_dt = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
+                    # Filtrar únicamente partidos entre el 9 y el 11 de Octubre
+                    if not (fecha_inicio <= fecha_dt <= fecha_fin):
+                        continue
+                    commence_time = fecha_dt.astimezone(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    continue
+
                 home_team = evento.get("home_team")
                 away_team = evento.get("away_team")
-                commence_time = evento.get("commence_time", "").replace("T", " ")[:16]
                 
                 cuota_local, cuota_empate, cuota_visitante = None, None, None
                 
@@ -83,7 +99,6 @@ def obtener_partidos_odds_api():
                                 else: cuota_empate = price
 
                 if not cuota_local or not cuota_visitante or not cuota_empate:
-                    print(f"Omitiendo {home_team} vs {away_team}: Cuotas incompletas.")
                     continue
 
                 lista_partidos.append({
@@ -144,33 +159,30 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
         "prob_btts": round((p_btts / num_sim) * 100, 1)
     }
 
-# --- 4. VALIDACIÓN CONTEXTUAL CON GROQ Y GEMINI ---
+# --- 4. EVALUACIÓN DE IA CON MODELO ESTÁNDAR LAMA 3.3 Y GEMINI ---
 def generar_analisis_btts(partido, sim_data):
     if not GROQ_API_KEY:
-        print("GROQ_API_KEY no configurada. Omitiendo evaluación de Groq.")
         return None
 
     url_api = "https://api.groq.com/openai/v1/chat/completions"
     
-    prompt_text = f"""Eres un analista cuantitativo de apuestas deportivas. Evalúa de forma objetiva si el mercado "Ambos Anotan" (BTTS) o "Over 2.5" tiene valor real para el siguiente encuentro.
+    prompt_text = f"""Eres un analista cuantitativo deportivo. Evalúa objetivamente si el mercado "Ambos Anotan" o "Over 2.5" tiene alto valor estadístico.
+DATOS:
+- Liga: {partido['liga']} | Partido: {partido['local']} vs {partido['visitante']}
+- Cuotas 1X2: L ({partido['cuotaLocal']}) | E ({partido['cuotaEmpate']}) | V ({partido['cuotaVisitante']})
+- Monte Carlo: BTTS ({sim_data['prob_btts']}%), Over 2.5 ({sim_data['prob_over25']}%)
 
-DATOS DEL PARTIDO:
-- Liga: {partido['liga']}
-- Partido: {partido['local']} vs {partido['visitante']}
-- Cuotas 1X2: Local ({partido['cuotaLocal']}) | Empate ({partido['cuotaEmpate']}) | Visitante ({partido['cuotaVisitante']})
-- Probabilidades Monte Carlo / Poisson: BTTS ({sim_data['prob_btts']}%), Over 2.5 ({sim_data['prob_over25']}%)
-
-ESTRUCTURA REQUERIDA (Responde ÚNICAMENTE en JSON sintácticamente válido):
+RESPONDE ÚNICAMENTE EN JSON SINTÁCTICAMENTE VÁLIDO:
 {{
-  "ambos_marcan_pronostico": "SÍ o NO (según corresponda)",
-  "stake": "Stake sugerido de 1/5 a 5/5",
+  "ambos_marcan_pronostico": "SÍ o NO",
+  "stake": "Stake sugerido (ej. 4/5)",
   "probabilidad_estimada": "Porcentaje estimado",
-  "cobertura_goles": "Sugerencia de línea alternativa"
+  "cobertura_goles": "Línea alternativa recomendada"
 }}"""
 
     headers = { "Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json" }
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt_text}],
         "response_format": {"type": "json_object"}
     }
@@ -183,78 +195,77 @@ ESTRUCTURA REQUERIDA (Responde ÚNICAMENTE en JSON sintácticamente válido):
         else:
             print(f"Groq respondió con error HTTP {response.status_code}")
     except Exception as e:
-        print("Error en la API de Groq:", e)
+        print("Error en Groq API:", e)
     
     return None
 
 def analisis_tactico_gemini_vip(partido, sim_data):
     if not client_gemini:
-        return "Análisis estadístico basado en intensidad ofensiva del modelo estocástico."
+        return "Análisis de alta probabilidad apoyado en intensidad anotadora proyectada por Poisson."
     
     prompt = (
-        f"Analiza tácticamente el encuentro {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
-        f"Métricas cuantitativas: BTTS: {sim_data['prob_btts']}%, Over 2.5: {sim_data['prob_over25']}%. "
-        f"Redacta un análisis técnico directo en exactamente 2 oraciones en español. Sin adornos ni saludos."
+        f"Analiza tácticamente el partido {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
+        f"Métricas cuantitativas de alta certeza: BTTS {sim_data['prob_btts']}%, Over 2.5 {sim_data['prob_over25']}%. "
+        f"Redacta un análisis técnico directo de exactamente 2 oraciones en español. Sin saludos."
     )
     
-    for intento in range(2):
-        try:
-            res = client_gemini.models.generate_content(model=MODELO_GEMINI, contents=prompt)
-            if res and res.text:
-                return res.text.strip()
-        except Exception as e:
-            print(f"Reintento Gemini VIP ({intento+1}):", e)
-            time.sleep(2)
+    try:
+        res = client_gemini.models.generate_content(model=MODELO_GEMINI, contents=prompt)
+        if res and res.text:
+            return res.text.strip()
+    except Exception as e:
+        print("Error en Gemini API:", e)
             
-    return "Proyección fundamentada en los volúmenes de llegada y concedidos por la simulación."
+    return "Proyección fundamentada en dominancia de áreas y alto volumen ofensivo esperable."
 
-# --- 5. ORQUESTADOR PRINCIPAL ---
+# --- 5. ORQUESTADOR PRINCIPAL CON FILTRO DE EFECTIVIDAD DEL 70% ---
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Ligas Europeas: {fecha_hoy_str}")
+    print(f"Iniciando escaneo de Alta Certeza (Jornada 9-11 Oct): {fecha_hoy_str}")
     
     partidos = obtener_partidos_odds_api()
 
     if not partidos:
         aviso_vacio = (
-            f"<b>REPORTE DE JORNADA VIGENTE</b>\n\n"
-            f"<i>No se encontraron partidos disponibles con cuotas completas en The Odds API.</i>"
+            f"<b>REPORTE DE JORNADA PRÓXIMA (9 - 11 OCT)</b>\n\n"
+            f"<i>No se encontraron partidos programados en esas fechas con cuotas completas.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
-        print("Proceso finalizado: No hay partidos válidos para procesar.")
         return
 
-    enviar_mensaje_telegram(f"<b>ANALIZADOR CUANTITATIVO EUROPEO</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    enviar_mensaje_telegram(f"🔥 <b>ANALIZADOR VIP (FILTRO DE CERTEZA 70%+)</b>\n📅 Jornada objetivo: <b>09 - 11 de Octubre</b>")
     partidos_enviados = 0
 
     for i, partido in enumerate(partidos):
-        print(f"Procesando: {partido['local']} vs {partido['visitante']} ({partido['liga']})")
-        
         sim = simular_monte_carlo(partido['cuotaLocal'], partido['cuotaVisitante'], NUM_SIMULACIONES)
         if not sim:
             continue
 
+        # --- FILTRO RIGUROSO DE CERTEZA / EFECTIVIDAD DEL 70% ---
+        # Solo se envía si BTTS o Over 2.5 superan o igualan el 70% de probabilidad
+        if sim['prob_btts'] < 70.0 and sim['prob_over25'] < 70.0:
+            continue
+
         base_ia = generar_analisis_btts(partido, sim)
         
-        if i == 0:
+        if i == 0 and client_gemini:
             justificacion = analisis_tactico_gemini_vip(partido, sim)
-            etiqueta_ia = "<i>[Análisis VIP Gemini]</i> " + justificacion
+            etiqueta_ia = "💎 <i>[Análisis VIP Gemini]</i> " + justificacion
         else:
-            etiqueta_ia = f"<i>[Métrica Cuantitativa]</i> BTTS proyectado en {sim['prob_btts']}% según simulación."
+            etiqueta_ia = f"⚡ <i>[Métrica Cuantitativa]</i> Alta certeza matemática respaldada por la simulación."
 
-        # Extracción segura de valores sin bloquear si Groq falla
-        pronostico_btts = base_ia.get('ambos_marcan_pronostico', 'SÍ' if sim['prob_btts'] > 55 else 'NO') if base_ia else ('SÍ' if sim['prob_btts'] > 55 else 'NO')
-        stake_val = base_ia.get('stake', '3/5') if base_ia else '3/5'
-        prob_est = base_ia.get('probabilidad_estimada', f"{sim['prob_btts']}%") if base_ia else f"{sim['prob_btts']}%"
+        pronostico_btts = base_ia.get('ambos_marcan_pronostico', 'SÍ') if base_ia else 'SÍ'
+        stake_val = base_ia.get('stake', '4/5') if base_ia else '4/5'
+        prob_est = base_ia.get('probabilidad_estimada', f"{max(sim['prob_btts'], sim['prob_over25'])}%") if base_ia else f"{max(sim['prob_btts'], sim['prob_over25'])}%"
         cobertura = base_ia.get('cobertura_goles', 'Over 2.5 Goles') if base_ia else 'Over 2.5 Goles'
 
         mensaje = (
             f"🏆 <b>{partido['liga']}</b>\n"
             f"⚽ <b>{partido['local']} vs {partido['visitante']}</b>\n"
             f"⏰ <b>Fecha:</b> <code>{partido['fechaHora']}</code>\n\n"
-            f"📊 <b>Cuotas Real Mercado:</b> L: <code>{partido['cuotaLocal']}</code> | E: <code>{partido['cuotaEmpate']}</code> | V: <code>{partido['cuotaVisitante']}</code>\n"
+            f"📊 <b>Cuotas Mercado:</b> L: <code>{partido['cuotaLocal']}</code> | E: <code>{partido['cuotaEmpate']}</code> | V: <code>{partido['cuotaVisitante']}</code>\n"
             f"🎲 <b>Monte Carlo ({NUM_SIMULACIONES} sim):</b> BTTS: <code>{sim['prob_btts']}%</code> | Over 2.5: <code>{sim['prob_over25']}%</code>\n\n"
-            f"🔥 <b>EVALUACIÓN DE MERCADO:</b>\n"
+            f"🔥 <b>EVALUACIÓN DE ALTA CERTEZA:</b>\n"
             f"🎯 <b>Ambos Equipos Anotan:</b> <b>{pronostico_btts}</b>\n"
             f"📈 <b>Stake Recomendado:</b> <code>{stake_val}</code>\n"
             f"🎲 <b>Probabilidad Estimada:</b> <code>{prob_est}</code>\n"
@@ -267,7 +278,7 @@ def ejecutar_analisis_principal():
         partidos_enviados += 1
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"<b>Escaneo completado.</b> Partidos analizados de forma transparente: {partidos_enviados}")
+    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Pronósticos filtrados de alta certeza (70%+): {partidos_enviados}")
     print(f"Proceso completado exitosamente. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
