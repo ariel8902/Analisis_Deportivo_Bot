@@ -46,15 +46,16 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-# --- 2. INGESTA DINÁMICA ESTRICTA: SOLO PARTIDOS DE HOY ---
+# --- 2. INGESTA ESTRICTA DE JORNADA DIARIA (8:00 AM A NOCHE - 20 HORAS MAX) ---
 def obtener_partidos_odds_api():
     lista_partidos = []
     if not ODDS_API_KEY:
         print("Error: ODDS_API_KEY no está configurada.")
         return []
 
-    ahora_col = datetime.now(ZONA_HORARIA_COLOMBIA)
-    fecha_hoy_str = ahora_col.strftime("%Y-%m-%d")
+    ahora_utc = datetime.now(timezone.utc)
+    # Ventana de 20 horas: Cubre únicamente la jornada del día desde la ejecución matutina
+    limite_jornada_hoy = ahora_utc + timedelta(hours=20)
 
     for liga in LIGAS_ODDS:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -76,11 +77,13 @@ def obtener_partidos_odds_api():
                     continue
                 
                 try:
-                    fecha_dt_col = datetime.fromisoformat(commence_raw.replace("Z", "+00:00")).astimezone(ZONA_HORARIA_COLOMBIA)
-                    # FILTRO DÍA A DÍA: Evalúa únicamente partidos que se jueguen HOY (hora Colombia)
-                    if fecha_dt_col.strftime("%Y-%m-%d") != fecha_hoy_str:
+                    fecha_dt_utc = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
+                    
+                    # Filtro de unicidad diaria: Solo procesa lo que se juega en la jornada de hoy
+                    if not (ahora_utc <= fecha_dt_utc <= limite_jornada_hoy):
                         continue
-                    commence_time = fecha_dt_col.strftime("%Y-%m-%d %H:%M")
+                        
+                    commence_time = fecha_dt_utc.astimezone(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %H:%M")
                 except Exception:
                     continue
 
@@ -225,7 +228,7 @@ def analisis_tactico_gemini_vip(partido, sim_data):
 def ejecutar_analisis_principal():
     ahora_col = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hoy_str = ahora_col.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo diario estricto (Jornada del día): {fecha_hoy_str}")
+    print(f"Iniciando escaneo diario estricto (8:00 AM a Noche): {fecha_hoy_str}")
     
     partidos = obtener_partidos_odds_api()
 
@@ -238,7 +241,7 @@ def ejecutar_analisis_principal():
         print("Proceso finalizado: Sin partidos hoy.")
         return
 
-    enviar_mensaje_telegram(f"<b>ANALIZADOR VIP (ESCANEO DIARIO | CERTEZA 70%+)</b>\n📅 Jornada activa: <b>{ahora_col.strftime('%Y-%m-%d')}</b>")
+    enviar_mensaje_telegram(f"<b>ANALIZADOR VIP (FILTRO DE CERTEZA 70%+)</b>\n📅 Jornada de hoy: <b>{ahora_col.strftime('%Y-%m-%d')}</b>")
     partidos_enviados = 0
 
     for i, partido in enumerate(partidos):
@@ -246,7 +249,7 @@ def ejecutar_analisis_principal():
         if not sim:
             continue
 
-        # FILTRO DE CERTEZA 70%+: Ignora lo que no sea de altísimo valor
+        # FILTRO ESTRICTO DE CERTEZA 70%+: Solo se envía el top de oportunidades
         if sim['prob_btts'] < 70.0 and sim['prob_over25'] < 70.0:
             continue
 
