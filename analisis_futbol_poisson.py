@@ -12,7 +12,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY") # Tu llave original de The Odds API para Europa
+# Mantenemos exactamente el nombre original de tu variable secreta anterior
+APISPORTS_KEY = os.getenv("APISPORTS_KEY") 
 
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 NUM_SIMULACIONES = 10000
@@ -20,7 +21,7 @@ NUM_SIMULACIONES = 10000
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-# Deportes soportados en The Odds API para las ligas europeas
+# Deportes / Ligas europeas configuradas con The Odds API
 LIGAS_EUROPEAS_ODDS = [
     { "nombre": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "sport_key": "soccer_epl" },
     { "nombre": "🇪🇸 LaLiga", "sport_key": "soccer_spain_la_liga" },
@@ -40,17 +41,17 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-# --- 2. INGESTA REAL CON THE ODDS API PARA LIGAS EUROPEAS ---
+# --- 2. INGESTA CON LA API ORIGINAL DE EUROPEAS ---
 def obtener_partidos_odds_api():
     lista_partidos = []
-    if not ODDS_API_KEY:
-        print("⚠️ Aviso: ODDS_API_KEY no está configurada.")
+    if not APISPORTS_KEY:
+        print("⚠️ Aviso: APISPORTS_KEY no está configurada.")
         return []
 
     for liga in LIGAS_EUROPEAS_ODDS:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
         params = {
-            "apiKey": ODDS_API_KEY,
+            "apiKey": APISPORTS_KEY,
             "regions": "eu",
             "markets": "h2h",
             "oddsFormat": "decimal"
@@ -79,7 +80,7 @@ def obtener_partidos_odds_api():
                                 price = str(outcome.get("price"))
                                 if name == home_team: cuota_local = price
                                 elif name == away_team: cuota_visitante = price
-                                else: cuota_empate = price # El restante suele ser el empate
+                                else: cuota_empate = price
 
                 lista_partidos.append({
                     "liga": liga["nombre"],
@@ -202,18 +203,18 @@ def analisis_tactico_gemini_vip(partido, sim_data):
 # --- 5. ORQUESTADOR PRINCIPAL ---
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"🚀 Iniciando escaneo con The Odds API: {fecha_hoy_str}")
-    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - THE ODDS API</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    print(f"🚀 Iniciando escaneo de Ligas Europeas: {fecha_hoy_str}")
+    enviar_mensaje_telegram(f"🎯 <b>SUPERANALISTA PRO - LIGAS EUROPEAS</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
 
     partidos = obtener_partidos_odds_api()
 
     if not partidos:
         aviso_vacio = (
             f"🛡️ <b>REPORTE DE JORNADA VIGENTE</b>\n\n"
-            f"📊 <i>No se encontraron partidos próximos en las ligas europeas configuradas a través de The Odds API.</i>"
+            f"📊 <i>No se encontraron partidos próximos en las ligas europeas configuradas.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
-        print("⚠️ No hay partidos vigentes en The Odds API.")
+        print("⚠️ No hay partidos vigentes.")
         return
 
     partidos_enviados = 0
@@ -252,7 +253,7 @@ def ejecutar_analisis_principal():
         
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Partidos europeos reales analizados: {partidos_enviados}")
+    enviar_mensaje_telegram(f"✅ <b>Escaneo completado.</b> Partidos analizados: {partidos_enviados}")
     print(f"✅ Proceso completado. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
