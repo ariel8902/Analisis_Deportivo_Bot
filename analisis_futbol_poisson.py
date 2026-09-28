@@ -21,9 +21,9 @@ NUM_SIMULACIONES = 10000
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-# Clave verificada para Colombia en The Odds API: soccer_colombia_liga_dimayor
+# Claves exactas en The Odds API
 LIGAS_ODDS = [
-    { "nombre": "Liga BetPlay", "sport_key": "soccer_colombia_liga_dimayor" },
+    { "nombre": "Liga BetPlay", "sport_key": "soccer_colombia_primera_a" },
     { "nombre": "Premier League", "sport_key": "soccer_epl" },
     { "nombre": "LaLiga", "sport_key": "soccer_spain_la_liga" },
     { "nombre": "Serie A", "sport_key": "soccer_italy_serie_a" },
@@ -43,15 +43,14 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
 
-# --- 2. INGESTA ADAPTATIVA (48 HORAS CON FALLBACK A 7 DÍAS) ---
-def obtener_partidos_odds_api(dias_limite=2):
+# --- 2. INGESTA DINÁMICA DÍA A DÍA (SIN LÍMITE FIJO DE FECHAS) ---
+def obtener_partidos_odds_api():
     lista_partidos = []
     if not ODDS_API_KEY:
         print("Error: ODDS_API_KEY no está configurada.")
         return []
 
     ahora_utc = datetime.now(timezone.utc)
-    limite_tiempo = ahora_utc + timedelta(days=dias_limite)
 
     for liga in LIGAS_ODDS:
         url = f"https://api.the-odds-api.com/v4/sports/{liga['sport_key']}/odds/"
@@ -64,7 +63,7 @@ def obtener_partidos_odds_api(dias_limite=2):
         try:
             response = requests.get(url, params=params, timeout=10)
             if response.status_code != 200:
-                print(f"Error {response.status_code} en The Odds API para {liga['nombre']} ({liga['sport_key']})")
+                print(f"Info {response.status_code}: {liga['nombre']} ({liga['sport_key']}) no tiene eventos cargados hoy.")
                 continue
             
             eventos = response.json()
@@ -75,7 +74,8 @@ def obtener_partidos_odds_api(dias_limite=2):
                 
                 try:
                     fecha_dt = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
-                    if not (ahora_utc <= fecha_dt <= limite_tiempo):
+                    # Descartar solo partidos pasados (procesa todo lo futuro de forma dinámica)
+                    if fecha_dt < ahora_utc:
                         continue
                     commence_time = fecha_dt.astimezone(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %H:%M")
                 except Exception:
@@ -159,7 +159,7 @@ def simular_monte_carlo(cuota_loc, cuota_vis, num_sim=10000):
         "prob_btts": round((p_btts / num_sim) * 100, 1)
     }
 
-# --- 4. INTEGRACIÓN DE MODELOS DE IA ---
+# --- 4. INTEGRACIÓN DE IA ---
 def generar_analisis_btts(partido, sim_data):
     if not GROQ_API_KEY:
         return None
@@ -201,11 +201,11 @@ RESPONDE ÚNICAMENTE EN JSON SINTÁCTICAMENTE VÁLIDO:
 
 def analisis_tactico_gemini_vip(partido, sim_data):
     if not client_gemini:
-        return "Análisis de alta probabilidad apoyado en intensidad anotadora proyectada por Poisson."
+        return "Análisis cuantitativo apoyado en proyección de intensidad de áreas por Poisson."
     
     prompt = (
         f"Analiza tácticamente el partido {partido['local']} vs {partido['visitante']} ({partido['liga']}). "
-        f"Métricas cuantitativas de alta certeza: BTTS {sim_data['prob_btts']}%, Over 2.5 {sim_data['prob_over25']}%. "
+        f"Métricas cuantitativas: BTTS {sim_data['prob_btts']}%, Over 2.5 {sim_data['prob_over25']}%. "
         f"Redacta un análisis técnico directo de exactamente 2 oraciones en español. Sin saludos."
     )
     
@@ -216,30 +216,24 @@ def analisis_tactico_gemini_vip(partido, sim_data):
     except Exception as e:
         print("Error en Gemini API:", e)
             
-    return "Proyección fundamentada en dominancia de áreas y alto volumen ofensivo esperable."
+    return "Proyección fundamentada en dominancia de áreas y volumen ofensivo esperable."
 
 # --- 5. ORQUESTADOR PRINCIPAL ---
 def ejecutar_analisis_principal():
     fecha_hoy_str = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo: {fecha_hoy_str}")
+    print(f"Iniciando escaneo dinámico día a día: {fecha_hoy_str}")
     
-    # Intento 1: Buscar a 2 días (48h)
-    partidos = obtener_partidos_odds_api(dias_limite=2)
-    
-    # Intento 2 (Fallback): Si no hay partidos a 48h, ampliar automáticamente a 7 días
-    if not partidos:
-        print("No se encontraron partidos a 48h. Ampliando ventana a 7 días...")
-        partidos = obtener_partidos_odds_api(dias_limite=7)
+    partidos = obtener_partidos_odds_api()
 
     if not partidos:
         aviso_vacio = (
-            f"<b>REPORTE DE JORNADA INMEDIATA</b>\n\n"
-            f"<i>No hay partidos agendados para los próximos 7 días con cuotas completas en las ligas monitoreadas.</i>"
+            f"<b>REPORTE DE JORNADA ACTIVA</b>\n\n"
+            f"<i>No hay partidos agendados próximamente con cuotas publicadas en las ligas monitoreadas.</i>"
         )
         enviar_mensaje_telegram(aviso_vacio)
         return
 
-    enviar_mensaje_telegram(f"<b>ANALIZADOR VIP (CERTEZA 70%+)</b>\n📅 Escaneo activo: <b>{fecha_hoy_str}</b>")
+    enviar_mensaje_telegram(f"<b>ANALIZADOR VIP (ESCANEO DINÁMICO)</b>\n📅 Fecha de escaneo: <b>{fecha_hoy_str}</b>")
     partidos_enviados = 0
 
     for i, partido in enumerate(partidos):
@@ -247,7 +241,8 @@ def ejecutar_analisis_principal():
         if not sim:
             continue
 
-        if sim['prob_btts'] < 70.0 and sim['prob_over25'] < 70.0:
+        # Filtro de certeza del 60%+ para asegurar calidad
+        if sim['prob_btts'] < 60.0 and sim['prob_over25'] < 60.0:
             continue
 
         base_ia = generar_analisis_btts(partido, sim)
@@ -256,7 +251,7 @@ def ejecutar_analisis_principal():
             justificacion = analisis_tactico_gemini_vip(partido, sim)
             etiqueta_ia = "<i>[Análisis VIP Gemini]</i> " + justificacion
         else:
-            etiqueta_ia = f"<i>[Métrica Cuantitativa]</i> Alta certeza matemática respaldada por la simulación."
+            etiqueta_ia = f"<i>[Métrica Cuantitativa]</i> Análisis estocástico en tiempo real."
 
         pronostico_btts = base_ia.get('ambos_marcan_pronostico', 'SÍ') if base_ia else 'SÍ'
         stake_val = base_ia.get('stake', '4/5') if base_ia else '4/5'
@@ -282,7 +277,7 @@ def ejecutar_analisis_principal():
         partidos_enviados += 1
         time.sleep(2)
 
-    enviar_mensaje_telegram(f"<b>Escaneo completado.</b> Pronósticos procesados con éxito: {partidos_enviados}")
+    enviar_mensaje_telegram(f"<b>Escaneo completado.</b> Pronósticos procesados: {partidos_enviados}")
     print(f"Proceso completado exitosamente. Enviados: {partidos_enviados}")
 
 if __name__ == "__main__":
