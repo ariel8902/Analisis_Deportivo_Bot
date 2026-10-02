@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (SOLO FÚTBOL TRADICIONAL)
+# 1. CONFIGURACIÓN Y CREDENCIALES (EXCLUSIVO FÚTBOL)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -117,7 +117,7 @@ def obtener_partidos_futbol():
     return lista_partidos
 
 # ---------------------------------------------------------
-# 4. EVALUACIÓN Y VALIDACIÓN CON IA (GEMINI 3.8)
+# 4. EVALUACIÓN Y VALIDACIÓN CON IA (REINTENTOS CONTRA 503)
 # ---------------------------------------------------------
 def analizar_partido_futbol_ia(partido):
     if not client_gemini:
@@ -129,19 +129,30 @@ def analizar_partido_futbol_ia(partido):
         f"Probabilidades Implícitas Desmarginadas: Local ({partido['prob_math_local']}%), Empate ({partido['prob_math_empate']}%), Visitante ({partido['prob_math_visitante']}%).\n"
         f"Establece en 'pick_principal' la mejor alternativa de valor (DNB, Doble Oportunidad, Totales o Ganador) con certeza >= 70%."
     )
-    
-    try:
-        res = client_gemini.models.generate_content(
-            model=MODELO_GEMINI,
-            contents=prompt,
-            config={"response_mime_type": "application/json", "response_schema": AnalisisFutbolSchema}
-        )
-        if res and res.text:
-            return json.loads(res.text), "OK"
-    except Exception as e:
-        print(f"Error Gemini: {e}")
-        return None, str(e)
-    return None, "Error de respuesta vacía"
+
+    intentos_maximos = 3
+    for intento in range(1, intentos_maximos + 1):
+        try:
+            res = client_gemini.models.generate_content(
+                model=MODELO_GEMINI,
+                contents=prompt,
+                config={"response_mime_type": "application/json", "response_schema": AnalisisFutbolSchema}
+            )
+            if res and res.text:
+                return json.loads(res.text), "OK"
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Intento {intento}/{intentos_maximos} falló para {partido['local']} vs {partido['visitante']}: {error_msg}")
+            
+            # Si el servidor de Google está ocupado (503 / 429), reintentamos con espera progresiva
+            if "503" in error_msg or "429" in error_msg or "UNAVAILABLE" in error_msg:
+                tiempo_espera = intento * 5
+                print(f"Servidor de Google ocupado. Reintentando en {tiempo_espera} segundos...")
+                time.sleep(tiempo_espera)
+            else:
+                break
+
+    return None, "Error de servicio o agotamiento de reintentos"
 
 # ---------------------------------------------------------
 # 5. ORQUESTADOR PRINCIPAL
@@ -162,7 +173,7 @@ def ejecutar_escaneo():
     descartados_certeza = 0
 
     for p in partidos:
-        time.sleep(6) # Control de ritmo para API de Gemini
+        time.sleep(6)  # Control de ritmo (10 peticiones/min max)
         analisis, estado = analizar_partido_futbol_ia(p)
         
         if not analisis:
@@ -185,7 +196,7 @@ def ejecutar_escaneo():
         enviar_mensaje_telegram(msg)
         partidos_enviados += 1
 
-    # Reporte de Cierre con Diagnóstico
+    # Reporte de cierre estructurado
     msg_resumen = f"<b>Escaneo fútbol completado.</b> Pronósticos enviados: {partidos_enviados}"
     if partidos_enviados == 0 and descartados_certeza > 0:
         msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) analizados no alcanzaron el {UMBRAL_MINIMO_FILTRO}% de certeza."
