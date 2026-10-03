@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from google import genai
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (EXCLUSIVO FÚTBOL)
+# 1. CONFIGURACIÓN Y CREDENCIALES (SOLO FÚTBOL)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -20,7 +20,6 @@ ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MODELO_GEMINI = 'gemini-3.8-flash'
 
-# Ligas de Fútbol Tradicional
 LIGAS_FUTBOL = [
     {"nombre": "🇨🇴 Liga Colombia", "sport_key": "soccer_colombia_liga_aguila"},
     {"nombre": "🇪🇸 La Liga España", "sport_key": "soccer_spain_la_liga"},
@@ -35,21 +34,23 @@ class AnalisisFutbolSchema(BaseModel):
     stake_principal: str = Field(description="Stake sugerido según la certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada opción de cobertura (0 a 100)")
     pick_cobertura: str = Field(description="Opción de cobertura (ej. Doble Oportunidad Local o Empate)")
-    analisis_tactico: str = Field(description="Justificación táctica sintética basada en Poisson y forma reciente en máx 2 oraciones.")
+    analisis_tactico: str = Field(description="Justificación táctica sintética basada en Poisson y contexto reciente en máx 2 oraciones.")
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Credenciales de Telegram no configuradas.")
-        return
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=10)
+        return res.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
+        return False
 
 # ---------------------------------------------------------
-# 2. MOTOR MATEMÁTICO (DESMARGINACIÓN Y POISSON)
+# 2. MOTOR MATEMÁTICO (POISSON LOCAL)
 # ---------------------------------------------------------
 def calcular_probabilidad_implicita(cuota_local, cuota_empate, cuota_visitante):
     if not cuota_local or not cuota_visitante:
@@ -117,49 +118,40 @@ def obtener_partidos_futbol():
     return lista_partidos
 
 # ---------------------------------------------------------
-# 4. EVALUACIÓN Y VALIDACIÓN CON IA (REINTENTOS CONTRA 503)
+# 4. EVALUACIÓN Y VALIDACIÓN CON IA (GEMINI 3.8)
 # ---------------------------------------------------------
 def analizar_partido_futbol_ia(partido):
     if not client_gemini:
         return None, "IA no configurada"
 
     prompt = (
-        f"Analiza cuantitativamente (Poisson) el partido: {partido['local']} vs {partido['visitante']} ({partido['liga']}).\n"
+        f"Analiza el partido: {partido['local']} vs {partido['visitante']} ({partido['liga']}).\n"
         f"Cuotas: Local ({partido['cuota_local']}) / Empate ({partido['cuota_empate']}) / Visitante ({partido['cuota_visitante']}).\n"
-        f"Probabilidades Implícitas Desmarginadas: Local ({partido['prob_math_local']}%), Empate ({partido['prob_math_empate']}%), Visitante ({partido['prob_math_visitante']}%).\n"
+        f"Probabilidades Poisson Desmarginadas: Local ({partido['prob_math_local']}%), Empate ({partido['prob_math_empate']}%), Visitante ({partido['prob_math_visitante']}%).\n"
+        f"Considera factores contextuales recientes (forma, rotaciones por calendario, urgencia en la tabla y bajas clave).\n"
         f"Establece en 'pick_principal' la mejor alternativa de valor (DNB, Doble Oportunidad, Totales o Ganador) con certeza >= 70%."
     )
 
-    intentos_maximos = 3
-    for intento in range(1, intentos_maximos + 1):
-        try:
-            res = client_gemini.models.generate_content(
-                model=MODELO_GEMINI,
-                contents=prompt,
-                config={"response_mime_type": "application/json", "response_schema": AnalisisFutbolSchema}
-            )
-            if res and res.text:
-                return json.loads(res.text), "OK"
-        except Exception as e:
-            error_msg = str(e)
-            print(f"Intento {intento}/{intentos_maximos} falló para {partido['local']} vs {partido['visitante']}: {error_msg}")
-            
-            # Si el servidor de Google está ocupado (503 / 429), reintentamos con espera progresiva
-            if "503" in error_msg or "429" in error_msg or "UNAVAILABLE" in error_msg:
-                tiempo_espera = intento * 5
-                print(f"Servidor de Google ocupado. Reintentando en {tiempo_espera} segundos...")
-                time.sleep(tiempo_espera)
-            else:
-                break
+    try:
+        res = client_gemini.models.generate_content(
+            model=MODELO_GEMINI,
+            contents=prompt,
+            config={"response_mime_type": "application/json", "response_schema": AnalisisFutbolSchema}
+        )
+        if res and res.text:
+            return json.loads(res.text), "OK"
+    except Exception as e:
+        print(f"Error en {partido['local']} vs {partido['visitante']}: {e}")
+        return None, str(e)
 
-    return None, "Error de servicio o agotamiento de reintentos"
+    return None, "ERROR_GENERAL"
 
 # ---------------------------------------------------------
 # 5. ORQUESTADOR PRINCIPAL
 # ---------------------------------------------------------
 def ejecutar_escaneo():
     fecha_colombia = datetime.now(ZONA_HORARIA_COLOMBIA).strftime("%Y-%m-%d")
-    print(f"Iniciando escaneo de Fútbol (Poisson): {fecha_colombia}")
+    print(f"Iniciando escaneo de Fútbol (Poisson + IA): {fecha_colombia}")
     partidos = obtener_partidos_futbol()
 
     if not partidos:
@@ -169,13 +161,14 @@ def ejecutar_escaneo():
         return
 
     enviar_mensaje_telegram(f"⚽ <b>PRONÓSTICOS FÚTBOL VIP</b> | Escaneo: <b>{fecha_colombia}</b>")
+    
     partidos_enviados = 0
     descartados_certeza = 0
 
     for p in partidos:
-        time.sleep(6)  # Control de ritmo (10 peticiones/min max)
+        time.sleep(5)  # Pausa de seguridad
         analisis, estado = analizar_partido_futbol_ia(p)
-        
+
         if not analisis:
             continue
 
@@ -193,10 +186,13 @@ def ejecutar_escaneo():
             f"💡 <i>[Gemini] {analisis['analisis_tactico']}</i>\n\n"
             f"🛡 <b>COBERTURA ALTERNATIVA:</b> {analisis['pick_cobertura']} (<code>{analisis['prob_cobertura']}%</code>)"
         )
-        enviar_mensaje_telegram(msg)
-        partidos_enviados += 1
+        
+        exito_envio = enviar_mensaje_telegram(msg)
+        if exito_envio:
+            partidos_enviados += 1
+            print(f"✅ Enviado a Telegram: {p['local']} vs {p['visitante']}")
 
-    # Reporte de cierre estructurado
+    # Reporte de cierre
     msg_resumen = f"<b>Escaneo fútbol completado.</b> Pronósticos enviados: {partidos_enviados}"
     if partidos_enviados == 0 and descartados_certeza > 0:
         msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) analizados no alcanzaron el {UMBRAL_MINIMO_FILTRO}% de certeza."
