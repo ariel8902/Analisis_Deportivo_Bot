@@ -2,8 +2,8 @@ name: Ejecutar Bot de Analisis Deportivo Prepartido
 
 on:
   schedule:
-    # 13:00 UTC equivale exactamente a las 08:00 AM Hora Colombia (UTC-5)
-    - cron: '0 13 * * *'
+    # 13:05 UTC equivale a las 08:05 AM Hora Colombia (UTC-5)
+    - cron: '5 13 * * *'
   workflow_dispatch:
 
 jobs:
