@@ -9,14 +9,15 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (FÚTBOL ANCLADO A CUOTAS REALES)
+# 1. CONFIGURACIÓN Y CREDENCIALES (FÚTBOL - PISO 1.40)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-UMBRAL_MINIMO_FILTRO = 75.0  # FILTRO DE RIGOR COMERCIAL
+UMBRAL_MINIMO_FILTRO = 75.0
+PISO_MINIMO_CUOTA = 1.40  # CANDADO DE RENTABILIDAD
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -35,8 +36,9 @@ LIGAS_FUTBOL = [
 
 class AnalisisFutbolSchema(BaseModel):
     prob_pick_principal: float = Field(description="Probabilidad estimada final (0 a 100)")
-    pick_principal: str = Field(description="Mercado comercial disponible en BetPlay (ej. Gana Local ML, Over 2.5 Goles, Ambos Anotan)")
-    regla_valor_betplay: str = Field(description="Rango de cuota exacto en BetPlay para validar la apuesta. Indica explícitamente cuándo ABSTENERSE si la cuota es sospechosamente alta.")
+    pick_principal: str = Field(description="Mercado comercial disponible en BetPlay (ej. Gana Local ML, Over 2.5 Goles, Ambos Anotan, Handicap -1.0)")
+    cuota_estimada_pick: float = Field(description="Cuota decimal aproximada en BetPlay para la opción principal recomendada.")
+    regla_valor_betplay: str = Field(description="Rango de cuota exacto en BetPlay. Exige explicito ABSTENERSE si la cuota cae por debajo de 1.40.")
     stake_principal: str = Field(description="Stake sugerido según certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada cobertura (0 a 100)")
     pick_cobertura: str = Field(description="Opción de cobertura accesible en BetPlay (ej. Over 1.5 Goles o Doble Oportunidad)")
@@ -50,7 +52,12 @@ def enviar_mensaje_telegram(texto):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
         res = requests.post(url, json=payload, timeout=5)
-        return res.status_code == 200
+        if res.status_code == 200:
+            return True
+        else:
+            time.sleep(2)
+            res_retry = requests.post(url, json=payload, timeout=5)
+            return res_retry.status_code == 200
     except Exception as e:
         print("Error enviando mensaje a Telegram:", e)
         return False
@@ -122,7 +129,6 @@ def obtener_partidos_futbol():
                 if not c_loc or not c_vis:
                     continue
 
-                # Estimación contextual de xG derivada de las probabilidades implícitas del mercado real
                 p_loc = (1.0 / c_loc)
                 p_vis = (1.0 / c_vis)
                 xg_local_est = round(p_loc * 2.6, 2)
@@ -154,10 +160,10 @@ def analizar_partido_futbol_ia(p):
         f"Analiza el partido de fútbol para las PRÓXIMAS 12 HORAS: {p['local']} vs {p['visita']} ({p['liga']}).\n"
         f"Cuotas Reales de Casa: Local ({p['cuota_local']}) / Empate ({p['cuota_empate']}) / Visitante ({p['cuota_visita']}).\n"
         f"Poisson Derivado: Over 1.5 ({p['poisson']['poisson_over_1_5']}%), Over 2.5 ({p['poisson']['poisson_over_2_5']}%), BTTS ({p['poisson']['poisson_btts']}%).\n\n"
-        f"REGLA DE SEGURIDAD Y COHERENCIA COMERCIAL:\n"
-        f"1. Tu 'pick_principal' DEBE SER OBLIGATORIAMENTE un mercado disponible en BetPlay (Ganador ML, Over/Under Goles, Ambos Anotan, Doble Oportunidad).\n"
-        f"2. NUNCA propongas un equipo como 'favorito claro' si su cuota en la casa de apuestas supera 2.20. Si la cuota real es alta, adáptate a mercados de goles o coberturas.\n"
-        f"3. En 'regla_valor_betplay' entrega el RANGO DE CUOTA PERMITIDO para entrar. Si la cuota en BetPlay está fuera del rango por información de última hora, manda a ABSTENERSE."
+        f"REGLA OBLIGATORIA DE RENTABILIDAD Y ANCLAJE A BETPLAY:\n"
+        f"1. Tu 'pick_principal' DEBE SER OBLIGATORIAMENTE un mercado comercial disponible en BetPlay (Ganador ML, Over/Under Goles, Ambos Anotan, Hándicap).\n"
+        f"2. CANDADO PISO DE CUOTA: La 'cuota_estimada_pick' DEBE SER OBLIGATORIAMENTE >= {PISO_MINIMO_CUOTA}. Queda ESTRICTAMENTE PROHIBIDO sugerir o dar como buena una cuota menor a 1.40 (ej. 1.15, 1.20, 1.25). Si la victoria directa paga muy poco, busca un Hándicap Asiático o Total de Goles que cumpla la cuota >= 1.40.\n"
+        f"3. En 'regla_valor_betplay' entrega la orden explícita de ABSTENERSE si la cuota en BetPlay cae por debajo de 1.40 por movimientos de última hora."
     )
 
     try:
@@ -181,7 +187,7 @@ def analizar_partido_futbol_ia(p):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Fútbol (Cuotas Reales BetPlay - Filtro 75%): {fecha_hora_col}")
+    print(f"Iniciando escaneo de Fútbol (Piso Cuota 1.40 - Filtro 75%): {fecha_hora_col}")
     
     partidos = obtener_partidos_futbol()
 
@@ -190,7 +196,7 @@ def ejecutar_escaneo():
         enviar_mensaje_telegram(msg)
         return
 
-    enviar_mensaje_telegram(f"⚽ <b>PRONÓSTICOS FÚTBOL VIP (BETPLAY READY)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
+    enviar_mensaje_telegram(f"⚽ <b>PRONÓSTICOS FÚTBOL VIP (PISO CUOTA 1.40)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
     partidos_enviados = 0
     descartados_certeza = 0
@@ -203,8 +209,12 @@ def ejecutar_escaneo():
             continue
 
         prob_max = max(analisis.get("prob_pick_principal", 0), analisis.get("prob_cobertura", 0))
-        if prob_max < UMBRAL_MINIMO_FILTRO:
+        cuota_pick = analisis.get("cuota_estimada_pick", 0.0)
+
+        # CANDADO DE RENTABILIDAD: Si la certeza es < 75% O la cuota es < 1.40, SE BLOQUEA EL ENVÍO
+        if prob_max < UMBRAL_MINIMO_FILTRO or cuota_pick < PISO_MINIMO_CUOTA:
             descartados_certeza += 1
+            print(f"⛔ Bloqueado {p['local']} vs {p['visita']} (Prob: {prob_max}%, Cuota Estimada: {cuota_pick})")
             continue
 
         msg = (
@@ -224,9 +234,9 @@ def ejecutar_escaneo():
             partidos_enviados += 1
             print(f"✅ Enviado a Telegram: {p['local']} vs {p['visita']}")
 
-    msg_resumen = f"<b>Escaneo fútbol completado.</b> Pronósticos enviados: {partidos_enviados}"
+    msg_resumen = f"<b>Escaneo fútbol completado.</b> Pronósticos rentables enviados: {partidos_enviados}"
     if partidos_enviados == 0 and descartados_certeza > 0:
-        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por no alcanzar el {UMBRAL_MINIMO_FILTRO}% de certeza."
+        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por cuota no rentable (< 1.40) o baja certeza."
 
     enviar_mensaje_telegram(msg_resumen)
 
