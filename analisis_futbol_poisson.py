@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN Y CREDENCIALES (FÚTBOL - PISO 1.40)
+# 1. CONFIGURACIÓN Y CREDENCIALES (FÚTBOL - TRIANGULACIÓN REAL)
 # ---------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -17,7 +17,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
 UMBRAL_MINIMO_FILTRO = 75.0
-PISO_MINIMO_CUOTA = 1.40  # CANDADO DE RENTABILIDAD
+PISO_MINIMO_CUOTA = 1.40  # CANDADO DE RENTABILIDAD INVIOLABLE
 ZONA_HORARIA_COLOMBIA = timezone(timedelta(hours=-5))
 
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -37,12 +37,13 @@ LIGAS_FUTBOL = [
 class AnalisisFutbolSchema(BaseModel):
     prob_pick_principal: float = Field(description="Probabilidad estimada final (0 a 100)")
     pick_principal: str = Field(description="Mercado comercial disponible en BetPlay (ej. Gana Local ML, Over 2.5 Goles, Ambos Anotan, Handicap -1.0)")
-    cuota_estimada_pick: float = Field(description="Cuota decimal aproximada en BetPlay para la opción principal recomendada.")
-    regla_valor_betplay: str = Field(description="Rango de cuota exacto en BetPlay. Exige explicito ABSTENERSE si la cuota cae por debajo de 1.40.")
+    cuota_estimada_pick: float = Field(description="Cuota decimal aproximada en BetPlay para la opción principal recomendada (DEBE SER >= 1.40).")
+    margen_operatividad_universal: str = Field(description="Instrucción del rango de variación de cuotas/líneas aceptable en BetPlay y punto exacto de ABSTENCION.")
+    regla_valor_betplay: str = Field(description="Rango de cuota exacto en BetPlay. Exige explícito ABSTENERSE si la cuota cae por debajo de 1.40.")
     stake_principal: str = Field(description="Stake sugerido según certeza (ej. 3/5 o 4/5)")
     prob_cobertura: float = Field(description="Probabilidad estimada cobertura (0 a 100)")
-    pick_cobertura: str = Field(description="Opción de cobertura accesible en BetPlay (ej. Over 1.5 Goles o Doble Oportunidad)")
-    analisis_tactico: str = Field(description="Justificación táctica basada en xG, bajas y coherencia de cuota en máx 2 oraciones.")
+    pick_cobertura: str = Field(description="Opción de cobertura accesible en BetPlay")
+    analisis_tactico: str = Field(description="Justificación táctica basada en la triangulación estricta de noticias, cuotas y Poisson en máx 2 oraciones.")
 
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -156,20 +157,42 @@ def analizar_partido_futbol_ia(p):
     if not client_gemini:
         return None, "IA no configurada"
 
-    prompt = (
-        f"Analiza el partido de fútbol para las PRÓXIMAS 12 HORAS: {p['local']} vs {p['visita']} ({p['liga']}).\n"
-        f"Cuotas Reales de Casa: Local ({p['cuota_local']}) / Empate ({p['cuota_empate']}) / Visitante ({p['cuota_visita']}).\n"
-        f"Poisson Derivado: Over 1.5 ({p['poisson']['poisson_over_1_5']}%), Over 2.5 ({p['poisson']['poisson_over_2_5']}%), BTTS ({p['poisson']['poisson_btts']}%).\n\n"
-        f"REGLA OBLIGATORIA DE RENTABILIDAD Y ANCLAJE A BETPLAY:\n"
-        f"1. Tu 'pick_principal' DEBE SER OBLIGATORIAMENTE un mercado comercial disponible en BetPlay (Ganador ML, Over/Under Goles, Ambos Anotan, Hándicap).\n"
-        f"2. CANDADO PISO DE CUOTA: La 'cuota_estimada_pick' DEBE SER OBLIGATORIAMENTE >= {PISO_MINIMO_CUOTA}. Queda ESTRICTAMENTE PROHIBIDO sugerir o dar como buena una cuota menor a 1.40 (ej. 1.15, 1.20, 1.25). Si la victoria directa paga muy poco, busca un Hándicap Asiático o Total de Goles que cumpla la cuota >= 1.40.\n"
-        f"3. En 'regla_valor_betplay' entrega la orden explícita de ABSTENERSE si la cuota en BetPlay cae por debajo de 1.40 por movimientos de última hora."
+    # PASO 1: BÚSQUEDA WEB EN VIVO (GROUNDING - REPORTES OFICIALES)
+    query_noticias = f"Injury report starting lineups bajas alineaciones oficiales {p['local']} vs {p['visita']} {p['fecha']}"
+    noticias_obtenidas = ""
+    try:
+        res_search = client_gemini.models.generate_content(
+            model=MODELO_GEMINI,
+            contents=f"Busca reportes oficiales de lesionados, bajas confirmadas y noticias tácticas de última hora para: {query_noticias}",
+            config=types.GenerateContentConfig(
+                tools=[{"google_search": {}}]
+            )
+        )
+        if res_search and res_search.text:
+            noticias_obtenidas = res_search.text
+    except Exception as e:
+        print(f"Advertencia en rastreo web para {p['local']} vs {p['visita']}: {e}")
+        noticias_obtenidas = "No se pudieron obtener noticias en vivo. Evaluar únicamente con cuotas y modelo Poisson."
+
+    # PASO 2: ESTRUCTURACIÓN Y TRIANGULACIÓN CERRADA
+    prompt_triangulacion = (
+        f"EVALUACIÓN DE TRIANGULACIÓN OBLIGATORIA ({p['local']} vs {p['visita']} - {p['liga']}):\n\n"
+        f"1. DATOS CUANTITATIVOS PYTHON:\n"
+        f"   - Cuotas Reales BetPlay/Kambi: Local ({p['cuota_local']}) / Empate ({p['cuota_empate']}) / Visitante ({p['cuota_visita']}).\n"
+        f"   - Poisson Derivado: Over 1.5 ({p['poisson']['poisson_over_1_5']}%), Over 2.5 ({p['poisson']['poisson_over_2_5']}%), BTTS ({p['poisson']['poisson_btts']}%).\n\n"
+        f"2. NOTICIAS EN VIVO Y RASTREO WEB (PASO 1):\n"
+        f"   {noticias_obtenidas}\n\n"
+        f"REGLAS DE TRIANGULACIÓN STRICTA (CERO COMPLACENCIAS):\n"
+        f"A. Cruza las noticias reales del Paso 1 con el movimiento de cuotas en BetPlay. Si la cuota contradice las noticias o hay dudas de rotaciones/bajas, reduce la probabilidad por debajo del 75%.\n"
+        f"B. CANDADO PISO DE CUOTA: La 'cuota_estimada_pick' DEBE SER OBLIGATORIAMENTE >= {PISO_MINIMO_CUOTA}. Queda ESTRICTAMENTE PROHIBIDO sugerir cuotas menores a 1.40 (ej. 1.15, 1.20, 1.25).\n"
+        f"C. MARGEN DE OPERATIVIDAD UNIVERSAL ('margen_operatividad_universal'): Define explícitamente el rango aceptable de cuota/línea y exactamente cuándo ABSTENERSE por pérdida de valor.\n"
+        f"D. Si la certeza calculada es menor al {UMBRAL_MINIMO_FILTRO}%, descarta el partido inmediatamente."
     )
 
     try:
         res = client_gemini.models.generate_content(
             model=MODELO_GEMINI,
-            contents=prompt,
+            contents=prompt_triangulacion,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=AnalisisFutbolSchema,
@@ -187,16 +210,15 @@ def analizar_partido_futbol_ia(p):
 def ejecutar_escaneo():
     ahora_colombia = datetime.now(ZONA_HORARIA_COLOMBIA)
     fecha_hora_col = ahora_colombia.strftime("%Y-%m-%d %I:%M %p")
-    print(f"Iniciando escaneo de Fútbol (Piso Cuota 1.40 - Filtro 75%): {fecha_hora_col}")
-    
+    print(f"Iniciando escaneo de Fútbol (Triangulación + Grounding + Piso 1.40): {fecha_hora_col}")
     partidos = obtener_partidos_futbol()
 
     if not partidos:
-        msg = f"⚽ <b>REPORTE FÚTBOL POISSON</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados con cuotas para las próximas 12 horas.</i>"
+        msg = f"⚽ <b>REPORTE FÚTBOL POISSON</b>\n<i>Escaneo: {fecha_hora_col}</i>\n\n<i>Sin partidos programados para las próximas 12 horas.</i>"
         enviar_mensaje_telegram(msg)
         return
 
-    enviar_mensaje_telegram(f"⚽ <b>PRONÓSTICOS FÚTBOL VIP (PISO CUOTA 1.40)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
+    enviar_mensaje_telegram(f"⚽ <b>PRONÓSTICOS FÚTBOL VIP (TRIANGULACIÓN REAL)</b>\n<i>Escaneo: {fecha_hora_col}</i>")
     
     partidos_enviados = 0
     descartados_certeza = 0
@@ -211,10 +233,10 @@ def ejecutar_escaneo():
         prob_max = max(analisis.get("prob_pick_principal", 0), analisis.get("prob_cobertura", 0))
         cuota_pick = analisis.get("cuota_estimada_pick", 0.0)
 
-        # CANDADO DE RENTABILIDAD: Si la certeza es < 75% O la cuota es < 1.40, SE BLOQUEA EL ENVÍO
+        # CANDADO DE RENTABILIDAD Y CERTEZA
         if prob_max < UMBRAL_MINIMO_FILTRO or cuota_pick < PISO_MINIMO_CUOTA:
             descartados_certeza += 1
-            print(f"⛔ Bloqueado {p['local']} vs {p['visita']} (Prob: {prob_max}%, Cuota Estimada: {cuota_pick})")
+            print(f"⛔ Bloqueado {p['local']} vs {p['visita']} (Prob: {prob_max}%, Cuota: {cuota_pick})")
             continue
 
         msg = (
@@ -223,9 +245,10 @@ def ejecutar_escaneo():
             f"💰 <b>Cuotas Reales:</b> <code>L: {p['cuota_local']} | E: {p['cuota_empate']} | V: {p['cuota_visita']}</code>\n"
             f"📊 <b>Poisson Base:</b> <code>Over 1.5: {p['poisson']['poisson_over_1_5']}% | BTTS: {p['poisson']['poisson_btts']}%</code>\n\n"
             f"🎯 <b>APUESTA PRINCIPAL: {analisis['pick_principal']}</b>\n"
+            f"📏 <b>Margen de Operatividad BetPlay:</b> <i>{analisis['margen_operatividad_universal']}</i>\n"
             f"📲 <b>Regla de Validación BetPlay:</b> <i>{analisis['regla_valor_betplay']}</i>\n"
             f"📈 <b>Probabilidad:</b> <code>{analisis['prob_pick_principal']}%</code> | <b>Stake:</b> <code>{analisis['stake_principal']}</code>\n"
-            f"💡 <i>[Gemini] {analisis['analisis_tactico']}</i>\n\n"
+            f"💡 <i>[Gemini Triangulado] {analisis['analisis_tactico']}</i>\n\n"
             f"🛡 <b>COBERTURA ALTERNATIVA:</b> {analisis['pick_cobertura']} (<code>{analisis['prob_cobertura']}%</code>)"
         )
         
@@ -236,7 +259,7 @@ def ejecutar_escaneo():
 
     msg_resumen = f"<b>Escaneo fútbol completado.</b> Pronósticos rentables enviados: {partidos_enviados}"
     if partidos_enviados == 0 and descartados_certeza > 0:
-        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por cuota no rentable (< 1.40) o baja certeza."
+        msg_resumen += f"\n\n<b>Detalle:</b> {descartados_certeza} partido(s) descartados por no superar la triangulación (< 75% certeza o cuota < 1.40)."
 
     enviar_mensaje_telegram(msg_resumen)
 
